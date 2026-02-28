@@ -69,7 +69,7 @@ const RisksHealthSection = memo(({ vscode }: RisksHealthSectionProps) => {
             icon="🛡️"
             loading={isLoading}
         >
-            {risks ? (
+            {risks && risks.level ? (
                 <div className="risks-container">
                     {/* Risk Level Badge */}
                     <div className="risk-level-row">
@@ -82,7 +82,7 @@ const RisksHealthSection = memo(({ vscode }: RisksHealthSectionProps) => {
                                 borderColor: RISK_COLORS[risks.level],
                             }}
                         >
-                            {RISK_ICONS[risks.level]} {risks.level.toUpperCase()}
+                            {RISK_ICONS[risks.level] ?? '•'} {(risks.level ?? 'unknown').toUpperCase()}
                         </span>
                     </div>
 

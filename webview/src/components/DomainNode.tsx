@@ -32,7 +32,8 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
         isActive = false,
         isClickable = true
     } = data;
-    const { status, symbolCount } = health;
+    const safeHealth = health ?? { status: 'healthy' as const, symbolCount: 0, healthScore: 0, avgComplexity: 0, coupling: 0, domain };
+    const { status, symbolCount } = safeHealth;
 
     // Get domain display name and icon
     const domainDisplayNames: Record<string, string> = {
@@ -87,7 +88,7 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
                 padding: '0 20px', // Extra padding
                 color: 'var(--vscode-editor-foreground)',
             }}
-            title={`Domain: ${domain}\nStatus: ${status}\nHealth: ${health.healthScore}%`}
+            title={`Domain: ${domain}\nStatus: ${status}\nHealth: ${safeHealth.healthScore}%`}
         >
             <Handle type="target" position={Position.Top} className="w-1.5 h-1.5 !bg-gray-400" />
 

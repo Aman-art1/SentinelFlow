@@ -31,6 +31,9 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
         isHighlighted = false,
     } = data;
 
+    // Safe coupling with fallback to avoid crash on undefined
+    const safeCoupling = coupling ?? { color: '#3b82f6', cbo: 0, inDegree: 0, outDegree: 0, normalizedScore: 0, nodeId: '' };
+
     // Icon based on symbol type
     const getIcon = () => {
         switch (symbolType) {
@@ -55,16 +58,9 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
     // If coupling.color represents the "heat", we might want to map it to the 3 distinct colors requested.
     // Let's deduce health from complexity/coupling if raw values available, otherwise use coupling.color but ensure it matches the palette.
 
-    let borderColor = coupling.color; // Default from backend
-    // Override to strict palette if we can infer health
-    // Assuming coupling.normalizedScore is available in some form, but here we have explicit complexity & cbo.
-    // Let's use a heuristic or just use the provided color if it aligns. 
-    // For now, let's respect the "Healthy -> Green, Medium -> Amber, Risky -> Red" rule by mapping the backend color or re-calculating.
-    // Since we don't have the full calculation logic here, we'll trust `coupling.color` usually, 
-    // BUT we should try to snap to the requested palette if it's close.
-    // Or, we can re-implement a simple check:
-    if (complexity > 20 || coupling.cbo > 10) borderColor = '#EF4444';
-    else if (complexity > 10 || coupling.cbo > 5) borderColor = '#F59E0B';
+    let borderColor = safeCoupling.color; // Default from backend
+    if (complexity > 20 || safeCoupling.cbo > 10) borderColor = '#EF4444';
+    else if (complexity > 10 || safeCoupling.cbo > 5) borderColor = '#F59E0B';
     else borderColor = '#22C55E';
 
 
@@ -90,7 +86,7 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
                 fontSize: '14px', // Increased from 13px
                 color: 'var(--vscode-editor-foreground)',
             }}
-            title={`Symbol: ${label}\nType: ${symbolType}\nComplexity: ${complexity}\nCBO: ${coupling.cbo}`}
+            title={`Symbol: ${label}\nType: ${symbolType}\nComplexity: ${complexity}\nCBO: ${safeCoupling.cbo}`}
         >
             <Handle type="target" position={Position.Top} className="w-1 h-1 !bg-gray-400" />
 
