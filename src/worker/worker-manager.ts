@@ -317,6 +317,8 @@ export class WorkerManager {
             return { type: response.type, data: response.data };
         } else if (response.type === 'inspector-risks-result') {
             return { type: response.type, data: response.data };
+        } else if (response.type === 'inspector-batch-result') {
+            return { type: response.type, data: response.data };
         } else if (response.type === 'inspector-ai-result') {
             return { type: response.type, data: response.data };
         } else if (response.type === 'inspector-ai-why-result') {
@@ -355,7 +357,7 @@ export class WorkerManager {
     /**
      * Configure AI settings
      */
-    async configureAI(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string }): Promise<void> {
+    async configureAI(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string; awsRegion?: string; bedrockModelId?: string; awsAccessKeyId?: string; awsSecretAccessKey?: string; aiProvider?: 'gemini' | 'bedrock' }): Promise<void> {
         const response = await this.sendRequest({
             type: 'configure-ai',
             id: this.generateId(),

@@ -272,6 +272,29 @@ class IndexWorker {
                         .catch(err => this.sendError(request.id, err.message));
                     break;
 
+                // Batched inspector request: overview + deps + risks in one round-trip
+                case 'inspector-batch':
+                    if (!this.inspector) {
+                        this.sendError(request.id, 'Inspector service not initialized');
+                        return;
+                    }
+                    Promise.all([
+                        this.inspector.getOverview(request.nodeId, request.nodeType),
+                        this.inspector.getDependencies(request.nodeId, request.nodeType),
+                        this.inspector.getRisks(request.nodeId, request.nodeType),
+                    ]).then(([overview, deps, risks]) => this.sendMessage({
+                        type: 'inspector-batch-result',
+                        id: request.id,
+                        requestId: request.requestId,
+                        data: { overview, deps, risks },
+                    })).catch(err => this.sendError(request.id, err.message));
+                    break;
+
+                case 'inspector-invalidate-cache':
+                    // No-op on worker side — cache lives in webview only
+                    this.sendMessage({ type: 'clear-complete', id: request.id });
+                    break;
+
                 case 'refine-graph':
                     this.handleRefineGraph(request.id);
                     break;

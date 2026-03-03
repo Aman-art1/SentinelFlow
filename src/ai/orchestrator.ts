@@ -6,6 +6,7 @@ import { IntentRouter, ClassifiedIntent } from './intent-router';
 import { GroqClient, createGroqClient } from './groq-client';
 import { VertexClient, createVertexClient } from './vertex-client';
 import { GeminiClient, createGeminiClient } from './gemini-client';
+import { BedrockClient, createBedrockClient } from './bedrock-client';
 import { CodeIndexDatabase } from '../db/database';
 import { SymbolContext } from '../db/schema';
 import { DomainClassification, DomainType } from '../domain/classifier';
@@ -80,6 +81,10 @@ export class AIOrchestrator {
     private groqClient: GroqClient | null;
     private vertexClient: VertexClient | null;
     private geminiClient: GeminiClient | null;
+    private bedrockClient: BedrockClient | null;
+
+    /** Which provider to use for the strategic (deep analysis) path */
+    private aiProvider: 'gemini' | 'bedrock' = 'gemini';
 
     private db: CodeIndexDatabase;
 
@@ -92,6 +97,8 @@ export class AIOrchestrator {
         this.groqClient = createGroqClient();
         this.vertexClient = createVertexClient();
         this.geminiClient = createGeminiClient();
+        // Bedrock is initialized lazily when config is provided
+        this.bedrockClient = createBedrockClient();
     }
 
     /**
@@ -390,10 +397,8 @@ Keep responses brief and focused - under 30 words when possible.`;
     }
 
     /**
-     * Execute strategic path (Gemini 1.5 Pro via Gemini or Vertex)
-     *
-     * The prompt is already fully assembled by buildPrompt() using the NodeContext JSON.
-     * No additional file reads are done here — the prompt contains everything the AI needs.
+     * Execute strategic path — routes to Bedrock or Gemini/Vertex based on aiProvider setting.
+     * Falls back to Groq on any strategic path failure.
      */
     private async executeStrategicPath(
         prompt: string,
@@ -401,20 +406,57 @@ Keep responses brief and focused - under 30 words when possible.`;
         context: SymbolContext | null,
         analysisType: 'security' | 'refactor' | 'dependencies' | 'general'
     ): Promise<AIResponse> {
-        // Prefer GeminiClient (API Key based) for easier setup
+        // --- Route based on the active provider ---
+        if (this.aiProvider === 'bedrock') {
+            if (!this.bedrockClient) {
+                console.warn('[Orchestrator] Bedrock selected but client not initialized. Falling back to Groq.');
+                return this.executeReflexPath(prompt, intent, context);
+            }
+
+            try {
+                const response = await this.bedrockClient.analyzeCode(
+                    prompt,
+                    [],
+                    analysisType,
+                    intent.query
+                );
+                return {
+                    content: response.content,
+                    model: response.model,
+                    intent,
+                    latencyMs: response.latencyMs,
+                    contextIncluded: !!context,
+                    neighborCount: context?.neighbors.length,
+                };
+            } catch (error) {
+                const errorMsg = (error as Error).message;
+                console.warn(`[Orchestrator] Bedrock failed: ${errorMsg}. Falling back to Groq.`);
+                const fallback = await this.executeReflexPath(prompt, intent, context);
+
+                let detailedExplanation = "Bedrock request failed.";
+                if (errorMsg.includes("Operation not allowed") || errorMsg.includes("AccessDenied")) {
+                    detailedExplanation = `**Model Access Required!**\n\nAWS rejected the request with "Operation not allowed". This means you have not enabled the selected model on your AWS account.\n\n**To fix this:**\n1. Log into your AWS Console\n2. Go to **Amazon Bedrock** -> **Model access** (bottom left)\n3. Click **Enable specific models**\n4. Check the box for your model (e.g. Amazon Nova 2 Lite)\n5. Click **Next** & **Submit**\n\n*(It takes 1-2 minutes for access to activate).*`;
+                }
+
+                return {
+                    ...fallback,
+                    content: `> ⚠️ **Bedrock Unreachable:** ${errorMsg}\n\n${detailedExplanation}\n\n---\n*Falling back to Groq/Llama...*\n\n${fallback.content}`,
+                    model: `${fallback.model} (Fallback)`,
+                };
+            }
+        }
+
+        // --- Gemini / Vertex path (default) ---
         const client = this.geminiClient || this.vertexClient;
 
         if (!client) {
             throw new Error('AI Strategic client not configured. Required for default routing.');
         }
 
-        // The prompt is already fully built with JSON context — pass it directly.
-        // analyzeCode receives an empty neighborCode array since neighbors are
-        // embedded as structured JSON inside the prompt itself.
         try {
             const response = await client.analyzeCode(
                 prompt,
-                [],           // No separate raw neighbor code blobs
+                [],
                 analysisType,
                 intent.query
             );
@@ -430,15 +472,12 @@ Keep responses brief and focused - under 30 words when possible.`;
         } catch (error) {
             console.warn(`[Orchestrator] Strategic AI (${client === this.geminiClient ? 'Gemini' : 'Vertex'}) failed. Error: ${(error as Error).message}. Falling back to Reflex path (Groq).`);
 
-            // Execute fallback
             const fallbackResponse = await this.executeReflexPath(prompt, intent, context);
 
-            // If the fallback also failed to use an AI (e.g., no Groq key), return its raw message
             if (fallbackResponse.model === 'none') {
                 return fallbackResponse;
             }
 
-            // Prepend a warning so the user knows this was a fallback
             return {
                 ...fallbackResponse,
                 content: `> ⚠️ **Strategic AI unreachable.** Falling back to fast local-path analysis.\n\n${fallbackResponse.content}`,
@@ -486,7 +525,7 @@ Keep responses brief and focused - under 30 words when possible.`;
     /**
      * Update AI client configuration
      */
-    updateConfig(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string }) {
+    updateConfig(config: { vertexProject?: string; groqApiKey?: string; geminiApiKey?: string; awsRegion?: string; bedrockModelId?: string; awsAccessKeyId?: string; awsSecretAccessKey?: string; aiProvider?: 'gemini' | 'bedrock' }) {
         if (config.groqApiKey) {
             console.log('[Orchestrator] Updating Groq client with new API key');
             this.groqClient = createGroqClient({ apiKey: config.groqApiKey });
@@ -500,6 +539,21 @@ Keep responses brief and focused - under 30 words when possible.`;
         if (config.geminiApiKey) {
             console.log('[Orchestrator] Updating Gemini client with new API key');
             this.geminiClient = createGeminiClient({ apiKey: config.geminiApiKey });
+        }
+
+        if (config.awsRegion || config.bedrockModelId || config.awsAccessKeyId) {
+            console.log('[Orchestrator] Updating Bedrock client with new config');
+            this.bedrockClient = createBedrockClient({
+                region: config.awsRegion,
+                modelId: config.bedrockModelId,
+                accessKeyId: config.awsAccessKeyId,
+                secretAccessKey: config.awsSecretAccessKey
+            });
+        }
+
+        if (config.aiProvider) {
+            console.log(`[Orchestrator] AI provider switched to: ${config.aiProvider}`);
+            this.aiProvider = config.aiProvider;
         }
     }
     // } removed to keep methods inside class

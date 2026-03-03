@@ -1381,6 +1381,33 @@ export class CodeIndexDatabase {
     }
 
     /**
+     * Get files whose path starts with a given prefix (for architecture folder nodes)
+     */
+    getFilesByPathPrefix(prefix: string): File[] {
+        // Ensure prefix ends with separator so we don't match partial names
+        const likePrefix = prefix.endsWith('/') ? prefix : prefix + '/';
+        const results = queryAll(this.db, `
+            SELECT DISTINCT f.*
+            FROM files f
+            WHERE f.file_path LIKE ? OR f.file_path = ?
+        `, [likePrefix + '%', prefix]);
+        return results.map(this.mapRowToFile);
+    }
+
+    /**
+     * Get symbols whose file_path starts with a given prefix (for architecture folder nodes)
+     */
+    getSymbolsByPathPrefix(prefix: string): Symbol[] {
+        const likePrefix = prefix.endsWith('/') ? prefix : prefix + '/';
+        const rows = queryAll(this.db, `
+            SELECT * FROM symbols
+            WHERE file_path LIKE ? OR file_path = ?
+        `, [likePrefix + '%', prefix]);
+        return rows.map(this.mapRowToSymbol);
+    }
+
+
+    /**
      * Get file by path
      */
     getFile(filePath: string): { lastModified: string } | null {

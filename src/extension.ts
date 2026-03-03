@@ -644,12 +644,22 @@ async function updateWorkerConfig() {
     const vertexProject = config.get<string>('vertexProject');
     const groqApiKey = config.get<string>('groqApiKey');
     const geminiApiKey = config.get<string>('geminiApiKey');
+    const awsRegion = config.get<string>('awsRegion');
+    const bedrockModelId = config.get<string>('bedrockModelId');
+    const aiProvider = config.get<'gemini' | 'bedrock'>('aiProvider') || 'gemini';
+    const awsAccessKeyId = config.get<string>('awsAccessKeyId');
+    const awsSecretAccessKey = config.get<string>('awsSecretAccessKey');
 
     try {
         await workerManager.configureAI({
             vertexProject,
             groqApiKey,
-            geminiApiKey
+            geminiApiKey,
+            awsRegion,
+            bedrockModelId,
+            aiProvider,
+            awsAccessKeyId,
+            awsSecretAccessKey,
         });
         outputChannel.appendLine('AI configuration updated');
     } catch (error) {
@@ -669,7 +679,8 @@ async function configureAI() {
         prompt: 'Enter your Groq API Key (Llama 3.1 analysis)',
         value: currentGroqKey,
         password: true,
-        placeHolder: 'gsk_...'
+        placeHolder: 'gsk_...',
+        ignoreFocusOut: true
     });
 
     if (groqKey !== undefined) {
@@ -683,7 +694,8 @@ async function configureAI() {
         title: 'Configure Vertex AI Project',
         prompt: 'Enter your Google Cloud Project ID (Gemini 1.5 analysis)',
         value: currentVertexProject,
-        placeHolder: 'my-project-id'
+        placeHolder: 'my-project-id',
+        ignoreFocusOut: true
     });
 
     if (vertexProject !== undefined) {
@@ -698,7 +710,8 @@ async function configureAI() {
         prompt: 'Enter your Google Gemini API Key (Alternative to Vertex AI)',
         value: currentGeminiKey,
         password: true,
-        placeHolder: 'AIza...'
+        placeHolder: 'AIza...',
+        ignoreFocusOut: true
     });
 
     if (geminiKey !== undefined) {
@@ -708,6 +721,14 @@ async function configureAI() {
 
     // Explicitly trigger worker update (though onDidChangeConfiguration should handle it)
     await updateWorkerConfig();
+}
+
+/** Handle AI Provider toggle from sidebar (called by SidebarProvider indirectly via command) */
+export async function setAIProvider(provider: 'gemini' | 'bedrock') {
+    const config = vscode.workspace.getConfiguration('sentinelFlow');
+    await config.update('aiProvider', provider, vscode.ConfigurationTarget.Global);
+    await updateWorkerConfig();
+    vscode.window.showInformationMessage(`Sentinel Flow: AI Provider switched to ${provider === 'bedrock' ? 'Amazon Bedrock' : 'Google Gemini'}.`);
 }
 
 /**

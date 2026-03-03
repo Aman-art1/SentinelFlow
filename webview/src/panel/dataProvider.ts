@@ -2,10 +2,11 @@
  * Inspector Panel Data Provider
  *
  * Centralized data fetching layer with:
+ * - Single batched round-trip (inspector-batch) for overview + deps + risks
  * - Request/response correlation via requestId
- * - Timeout handling
- * - Request cancellation
- * - Response caching
+ * - Timeout handling & request cancellation
+ * - 5-minute in-memory cache (data is stable between re-indexes)
+ * - Public peekCache() for instant cache-hit detection (used by prefetch path)
  *
  * NO database logic - all queries go through extension → worker
  */
@@ -25,12 +26,21 @@ interface CacheEntry<T> {
     timestamp: number;
 }
 
+export interface BatchData {
+    overview: OverviewData;
+    deps: DependencyData;
+    risks: RiskData;
+}
+
 class InspectorDataProvider {
     private vscode: VSCodeAPI;
     private pendingRequests = new Map<string, PendingRequest<unknown>>();
     private cache = new Map<string, CacheEntry<unknown>>();
-    private readonly cacheTTL = 30000; // 30 seconds
-    private readonly defaultTimeout = 10000; // 10 seconds
+
+    // 5 minutes — index data is stable between re-index runs.
+    // Invalidated explicitly when the user triggers a re-index.
+    private readonly cacheTTL = 300_000;
+    private readonly defaultTimeout = 10_000; // 10 seconds
     private messageHandlerBound = false;
 
     constructor(vscode: VSCodeAPI) {
@@ -79,15 +89,20 @@ class InspectorDataProvider {
         if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
             return cached.data as T;
         }
-        // Clean up expired entry
-        if (cached) {
-            this.cache.delete(key);
-        }
+        if (cached) this.cache.delete(key); // evict expired
         return null;
     }
 
     private setCache<T>(key: string, data: T): void {
         this.cache.set(key, { data, timestamp: Date.now() });
+    }
+
+    /**
+     * Public cache peek — returns cached batch data without making any requests.
+     * Used by prefetch logic to determine if data is already ready (0ms display).
+     */
+    peekCache(id: string): BatchData | null {
+        return this.getFromCache<BatchData>(this.getCacheKey('batch', id));
     }
 
     /**
@@ -122,12 +137,43 @@ class InspectorDataProvider {
     }
 
     /**
+     * ⚡ FAST PATH: Fetch overview + deps + risks in a SINGLE round-trip.
+     * Falls back to individual requests if batch fails.
+     * Always populates individual caches too so getOverview/getDeps/getRisks hit cache.
+     */
+    async getAll(id: string, nodeType: NodeType): Promise<BatchData> {
+        const batchKey = this.getCacheKey('batch', id);
+        const cached = this.getFromCache<BatchData>(batchKey);
+        if (cached) return cached;
+
+        const data = await this.request<BatchData>('inspector-batch', {
+            nodeId: id,
+            nodeType,
+        });
+
+        // Populate batch cache
+        this.setCache(batchKey, data);
+
+        // Also populate individual caches so calls to getOverview/getDeps/getRisks
+        // (e.g. from legacy code) also get instant hits
+        this.setCache(this.getCacheKey('overview', id), data.overview);
+        this.setCache(this.getCacheKey('deps', id), data.deps);
+        this.setCache(this.getCacheKey('risks', id), data.risks);
+
+        return data;
+    }
+
+    /**
      * Get overview data for a node
      */
     async getOverview(id: string, nodeType: NodeType): Promise<OverviewData> {
         const cacheKey = this.getCacheKey('overview', id);
         const cached = this.getFromCache<OverviewData>(cacheKey);
         if (cached) return cached;
+
+        // If a batch is in flight or cached, use that
+        const batchCached = this.getFromCache<BatchData>(this.getCacheKey('batch', id));
+        if (batchCached) return batchCached.overview;
 
         const data = await this.request<OverviewData>('inspector-overview', {
             nodeId: id,
@@ -146,6 +192,9 @@ class InspectorDataProvider {
         const cached = this.getFromCache<DependencyData>(cacheKey);
         if (cached) return cached;
 
+        const batchCached = this.getFromCache<BatchData>(this.getCacheKey('batch', id));
+        if (batchCached) return batchCached.deps;
+
         const data = await this.request<DependencyData>('inspector-dependencies', {
             nodeId: id,
             nodeType,
@@ -162,6 +211,9 @@ class InspectorDataProvider {
         const cacheKey = this.getCacheKey('risks', id);
         const cached = this.getFromCache<RiskData>(cacheKey);
         if (cached) return cached;
+
+        const batchCached = this.getFromCache<BatchData>(this.getCacheKey('batch', id));
+        if (batchCached) return batchCached.risks;
 
         const data = await this.request<RiskData>('inspector-risks', {
             nodeId: id,
@@ -180,7 +232,6 @@ class InspectorDataProvider {
         id: string,
         action: 'explain' | 'audit' | 'refactor' | 'optimize'
     ): Promise<AIResult> {
-        // Check cache for AI results too
         const cacheKey = this.getCacheKey(`ai-${action}`, id);
         const cached = this.getFromCache<AIResult>(cacheKey);
         if (cached) {
@@ -190,7 +241,7 @@ class InspectorDataProvider {
         const result = await this.request<AIResult>(
             'inspector-ai-action',
             { nodeId: id, action },
-            200000 // 200s — Gemini can take 120-173s for complex symbols
+            200_000 // 200s — Gemini can take 120-173s for complex symbols
         );
 
         this.setCache(cacheKey, result);
@@ -201,11 +252,11 @@ class InspectorDataProvider {
      * Ask AI to explain a specific risk metric
      */
     async explainRisk(id: string, metric: string): Promise<string> {
-        return this.request<string>('inspector-ai-why', { nodeId: id, metric }, 15000);
+        return this.request<string>('inspector-ai-why', { nodeId: id, metric }, 15_000);
     }
 
     /**
-     * Cancel only data-fetch requests (overview / deps / risks).
+     * Cancel only data-fetch requests (overview / deps / risks / batch).
      * AI action requests are intentionally LEFT running — they are expensive
      * and the user expects a result even if they click elsewhere on the graph.
      */
@@ -232,15 +283,27 @@ class InspectorDataProvider {
     }
 
     /**
-     * Clear the cache
+     * Invalidate all cached inspector data (call after re-index completes).
+     * AI results are preserved since they depend on code structure, not index state.
+     */
+    invalidateCache(): void {
+        const AI_PREFIX_RE = /^ai-/;
+        for (const key of this.cache.keys()) {
+            const type = key.split(':')[0];
+            if (!AI_PREFIX_RE.test(type)) {
+                this.cache.delete(key);
+            }
+        }
+    }
+
+    /**
+     * Clear the entire cache including AI results
      */
     clearCache(): void {
         this.cache.clear();
     }
 
-    /**
-     * Get pending request count (for debugging)
-     */
+    /** Get pending request count (for debugging) */
     getPendingCount(): number {
         return this.pendingRequests.size;
     }
@@ -260,7 +323,7 @@ export function getDataProvider(vscode: VSCodeAPI): InspectorDataProvider {
 }
 
 /**
- * Reset the provider (useful for testing)
+ * Reset the provider (useful for testing / hard resets)
  */
 export function resetDataProvider(): void {
     if (providerInstance) {

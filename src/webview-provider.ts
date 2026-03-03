@@ -85,6 +85,7 @@ export class GraphWebviewProvider {
                     case 'inspector-overview':
                     case 'inspector-dependencies':
                     case 'inspector-risks':
+                    case 'inspector-batch':
                     case 'inspector-ai-action':
                     case 'inspector-ai-why':
                         await this.handleInspectorMessage(message);

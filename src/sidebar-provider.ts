@@ -46,6 +46,57 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 }
+                case 'set-ai-provider': {
+                    const provider = data.value as 'gemini' | 'bedrock';
+                    const cfg = vscode.workspace.getConfiguration('sentinelFlow');
+
+                    if (provider === 'bedrock') {
+                        let accessKey = cfg.get<string>('awsAccessKeyId');
+                        let secretKey = cfg.get<string>('awsSecretAccessKey');
+
+                        if (!accessKey || !secretKey) {
+                            accessKey = await vscode.window.showInputBox({
+                                title: 'Configure AWS Credentials',
+                                prompt: 'Enter your AWS Access Key ID',
+                                value: accessKey || '',
+                                placeHolder: 'AKIA...',
+                                ignoreFocusOut: true
+                            });
+
+                            if (!accessKey) {
+                                // Cancelled - revert toggle
+                                webviewView.webview.postMessage({ type: 'sync-ai-provider', value: 'gemini' });
+                                return;
+                            }
+
+                            secretKey = await vscode.window.showInputBox({
+                                title: 'Configure AWS Credentials',
+                                prompt: 'Enter your AWS Secret Access Key',
+                                value: secretKey || '',
+                                password: true,
+                                placeHolder: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+                                ignoreFocusOut: true
+                            });
+
+                            if (!secretKey) {
+                                // Cancelled - revert toggle
+                                webviewView.webview.postMessage({ type: 'sync-ai-provider', value: 'gemini' });
+                                return;
+                            }
+
+                            await cfg.update('awsAccessKeyId', accessKey, vscode.ConfigurationTarget.Global);
+                            await cfg.update('awsSecretAccessKey', secretKey, vscode.ConfigurationTarget.Global);
+                            vscode.window.showInformationMessage('AWS Credentials saved securely in settings.');
+                        }
+                    }
+
+                    await cfg.update('aiProvider', provider, vscode.ConfigurationTarget.Global);
+                    // updateWorkerConfig is triggered automatically by onDidChangeConfiguration
+                    vscode.window.showInformationMessage(
+                        `Sentinel Flow: AI Provider switched to ${provider === 'bedrock' ? '☁️ Amazon Bedrock' : '✨ Google Gemini'}.`
+                    );
+                    break;
+                }
             }
         });
     }
@@ -53,6 +104,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     private _getHtmlForWebview(webview: vscode.Webview) {
         const nonce = getNonce();
         const autoIndexEnabled = this._context.workspaceState.get<boolean>('autoIndexEnabled', true);
+        const aiProvider = vscode.workspace.getConfiguration('sentinelFlow').get<string>('aiProvider', 'gemini');
 
         // Use VS Code's native CSS variables for a consistent look
         return `<!DOCTYPE html>
@@ -230,6 +282,34 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     .slider.round:before {
                         border-radius: 50%;
                     }
+
+                    /* AI Provider segmented toggle */
+                    .provider-toggle {
+                        display: flex;
+                        border: 1px solid var(--vscode-widget-border);
+                        border-radius: 4px;
+                        overflow: hidden;
+                        width: 100%;
+                    }
+                    .provider-btn {
+                        flex: 1;
+                        padding: 6px 8px;
+                        font-size: 11px;
+                        font-weight: 500;
+                        cursor: pointer;
+                        border: none;
+                        background: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                        transition: background 0.15s, color 0.15s;
+                        text-align: center;
+                    }
+                    .provider-btn.active {
+                        background: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                    }
+                    .provider-btn:first-child {
+                        border-right: 1px solid var(--vscode-widget-border);
+                    }
                 </style>
 			</head>
 			<body>
@@ -257,6 +337,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                             <input type="checkbox" id="toggle-auto-index" ${autoIndexEnabled ? 'checked' : ''}>
                             <span class="slider round"></span>
                         </label>
+                    </div>
+
+                    <div class="divider"></div>
+
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <div style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 2px;">🤖 Strategic AI Provider</div>
+                        <div class="provider-toggle">
+                            <button class="provider-btn ${aiProvider === 'gemini' ? 'active' : ''}" id="btn-provider-gemini">
+                                ✨ Google Gemini
+                            </button>
+                            <button class="provider-btn ${aiProvider === 'bedrock' ? 'active' : ''}" id="btn-provider-bedrock">
+                                ☁️ AWS Bedrock
+                            </button>
+                        </div>
+                        <div class="status-text" style="text-align: left;">Groq always handles fast queries</div>
                     </div>
 
                     <div class="divider"></div>
@@ -318,6 +413,32 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     
                     document.getElementById('toggle-auto-index').addEventListener('change', (e) => {
                         vscode.postMessage({ type: 'toggle-auto-index', value: e.target.checked });
+                    });
+                    
+                    // AI Provider toggle
+                    document.getElementById('btn-provider-gemini').addEventListener('click', () => {
+                        document.getElementById('btn-provider-gemini').classList.add('active');
+                        document.getElementById('btn-provider-bedrock').classList.remove('active');
+                        vscode.postMessage({ type: 'set-ai-provider', value: 'gemini' });
+                    });
+                    document.getElementById('btn-provider-bedrock').addEventListener('click', () => {
+                        document.getElementById('btn-provider-bedrock').classList.add('active');
+                        document.getElementById('btn-provider-gemini').classList.remove('active');
+                        vscode.postMessage({ type: 'set-ai-provider', value: 'bedrock' });
+                    });
+
+                    // Handle sync from backend (e.g. user cancelled credential prompt)
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+                        if (message.type === 'sync-ai-provider') {
+                            if (message.value === 'gemini') {
+                                document.getElementById('btn-provider-gemini').classList.add('active');
+                                document.getElementById('btn-provider-bedrock').classList.remove('active');
+                            } else if (message.value === 'bedrock') {
+                                document.getElementById('btn-provider-bedrock').classList.add('active');
+                                document.getElementById('btn-provider-gemini').classList.remove('active');
+                            }
+                        }
                     });
                 </script>
 			</body>

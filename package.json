@@ -87,6 +87,33 @@
           "type": "boolean",
           "default": false,
           "description": "Enable LSP-based symbol resolution for 100% accurate type definitions (TypeScript/JavaScript). Uses VS Code's built-in language server."
+        },
+        "sentinelFlow.aiProvider": {
+          "type": "string",
+          "enum": [
+            "gemini",
+            "bedrock"
+          ],
+          "default": "gemini",
+          "description": "Which AI service to use for deep architectural analysis (strategic path). Groq is always used for fast/reflex queries."
+        },
+        "sentinelFlow.awsRegion": {
+          "type": "string",
+          "default": "us-east-1",
+          "description": "AWS Region for Amazon Bedrock. Nova 2 models are only available in us-east-1. Your IAM credentials work globally."
+        },
+        "sentinelFlow.bedrockModelId": {
+          "type": "string",
+          "default": "us.amazon.nova-2-lite-v1:0",
+          "description": "Amazon Bedrock Model ID. Defaults to US Cross-Region Amazon Nova 2 Lite (us-east-1 endpoint required)."
+        },
+        "sentinelFlow.awsAccessKeyId": {
+          "type": "string",
+          "description": "AWS Access Key ID to authenticate with Amazon Bedrock."
+        },
+        "sentinelFlow.awsSecretAccessKey": {
+          "type": "string",
+          "description": "AWS Secret Access Key to authenticate with Amazon Bedrock."
         }
       }
     },
@@ -144,6 +171,7 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1000.0",
     "sql.js": "^1.14.0",
     "tree-sitter-wasms": "^0.1.11",
     "web-tree-sitter": "^0.20.8"

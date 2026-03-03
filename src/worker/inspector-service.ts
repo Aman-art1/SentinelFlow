@@ -40,6 +40,14 @@ export class InspectorService {
     }
 
     /**
+     * Returns true if `s` looks like a folder/file path (architecture view folder node)
+     * rather than a logical domain name like 'api' or 'auth'.
+     */
+    private isFolderPath(s: string): boolean {
+        return s.includes('/') || s.includes('\\');
+    }
+
+    /**
      * Get overview data for a selected node
      */
     async getOverview(nodeId: string, nodeType: 'domain' | 'file' | 'symbol'): Promise<InspectorOverviewData> {
@@ -51,28 +59,49 @@ export class InspectorService {
 
         try {
             if (nodeType === 'domain') {
-                const domainName = nodeId.replace(/^domain:/, '');
-                data.name = domainName;
-                data.path = 'Domain';
+                const rawName = nodeId.replace(/^domain:/, '');
 
-                const domainFiles = this.db.getFilesByDomain(domainName);
-                if (domainFiles) {
-                    data.fileCount = domainFiles.length;
-                    let functionCount = 0;
-                    for (const file of domainFiles) {
-                        const stats = this.db.getFileStats(file.filePath);
-                        if (stats) functionCount += stats.functionCount;
+                if (this.isFolderPath(rawName)) {
+                    // Architecture view: folder path node (e.g. "backend/src")
+                    const absPath = this.resolvePath(rawName);
+                    data.name = rawName.split('/').pop() || rawName;
+                    data.path = 'Folder';
+
+                    const folderFiles = this.db.getFilesByPathPrefix(absPath);
+                    data.fileCount = folderFiles.length;
+
+                    const folderSymbols = this.db.getSymbolsByPathPrefix(absPath);
+                    data.functionCount = folderSymbols.length;
+
+                    // Health based on complexity
+                    const { crossDomain, total } = this.db.getDomainEdgeCounts(rawName);
+                    const health = computeDomainHealth(rawName, folderSymbols, crossDomain, total);
+                    data.healthPercent = health.healthScore;
+                    data.coupling = health.coupling;
+                } else {
+                    // Codebase view: logical domain name (e.g. "api", "auth")
+                    const domainName = rawName;
+                    data.name = domainName;
+                    data.path = 'Domain';
+
+                    const domainFiles = this.db.getFilesByDomain(domainName);
+                    if (domainFiles) {
+                        data.fileCount = domainFiles.length;
+                        let functionCount = 0;
+                        for (const file of domainFiles) {
+                            const stats = this.db.getFileStats(file.filePath);
+                            if (stats) functionCount += stats.functionCount;
+                        }
+                        data.functionCount = functionCount;
                     }
-                    data.functionCount = functionCount;
-                }
 
-                // P1-A: Real health using computeDomainHealth()
-                const domainSymbols = this.db.getSymbolsByDomain(domainName);
-                const { crossDomain, total } = this.db.getDomainEdgeCounts(domainName);
-                const health = computeDomainHealth(domainName, domainSymbols, crossDomain, total);
-                data.healthPercent = health.healthScore;
-                data.coupling = health.coupling;
-                data.functionCount = data.functionCount ?? health.symbolCount;
+                    const domainSymbols = this.db.getSymbolsByDomain(domainName);
+                    const { crossDomain, total } = this.db.getDomainEdgeCounts(domainName);
+                    const health = computeDomainHealth(domainName, domainSymbols, crossDomain, total);
+                    data.healthPercent = health.healthScore;
+                    data.coupling = health.coupling;
+                    data.functionCount = data.functionCount ?? health.symbolCount;
+                }
             } else if (nodeType === 'file') {
                 // Remove potential domain prefix if present for lookup (e.g. "Domain:/abs/path.ts" -> "/abs/path.ts")
                 let rawFilePath = nodeId;
@@ -169,6 +198,7 @@ export class InspectorService {
 
         try {
             if (nodeType === 'symbol') {
+                // ... symbol tracking unchanged ...
                 const parts = nodeId.split(':');
                 if (parts.length >= 3) {
                     const line = parseInt(parts[parts.length - 1], 10);
@@ -196,6 +226,24 @@ export class InspectorService {
                         }
                     }
                 }
+            } else if (nodeType === 'domain') {
+                // Domain: show files within the domain/folder
+                const rawName = nodeId.replace(/^domain:/, '');
+                const symbols = this.isFolderPath(rawName)
+                    ? this.db.getSymbolsByPathPrefix(this.resolvePath(rawName))
+                    : this.db.getSymbolsByDomain(rawName);
+
+                // Build unique file list as import entries
+                const fileMap = new Map<string, string>();
+                for (const sym of symbols) {
+                    fileMap.set(sym.filePath, sym.filePath.split('/').pop() || sym.filePath);
+                }
+                result.imports = Array.from(fileMap.entries()).map(([fp, name]) => ({
+                    id: fp,
+                    name,
+                    type: 'file',
+                    filePath: fp
+                }));
             } else if (nodeType === 'file') {
                 let rawFilePath = nodeId;
                 const colonIdx = nodeId.indexOf(':');
@@ -317,10 +365,12 @@ export class InspectorService {
                     }
                 }
 
-                // P1-C: Domain risk — based on avg complexity across all symbols in domain
+                // P1-C: Domain risk
             } else if (nodeType === 'domain') {
-                const domainName = nodeId.replace(/^domain:/, '');
-                const domainSymbols = this.db.getSymbolsByDomain(domainName);
+                const rawName = nodeId.replace(/^domain:/, '');
+                const domainSymbols = this.isFolderPath(rawName)
+                    ? this.db.getSymbolsByPathPrefix(this.resolvePath(rawName))
+                    : this.db.getSymbolsByDomain(rawName);
 
                 if (domainSymbols.length > 0) {
                     const avgComplexity = domainSymbols.reduce((s, sym) => s + sym.complexity, 0) / domainSymbols.length;
@@ -337,7 +387,7 @@ export class InspectorService {
                         heatScore = Math.max(heatScore, 50);
                     }
 
-                    const { crossDomain, total } = this.db.getDomainEdgeCounts(domainName);
+                    const { crossDomain, total } = this.db.getDomainEdgeCounts(rawName);
                     const coupling = total > 0 ? crossDomain / total : 0;
                     if (coupling > 0.6) {
                         warnings.push(`High cross-domain coupling (${Math.round(coupling * 100)}% of edges cross domain boundary)`);

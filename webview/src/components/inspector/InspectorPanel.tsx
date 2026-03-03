@@ -1,10 +1,11 @@
 /**
  * Inspector Panel - Main Container Component
  *
- * CRITICAL PERFORMANCE:
- * - Uses stable selectors to prevent re-render cascades
- * - Debounces data fetching on selection change
- * - useRef for timers (not state)
+ * PERFORMANCE OPTIMIZATIONS:
+ * - getAll(): single batched round-trip (overview + deps + risks in one message)
+ * - peekCache(): instant 0ms render when data is already prefetched/cached
+ * - 150ms debounce only fires on true cache-miss; cached nodes feel instant
+ * - Generation counter discards stale in-flight responses on rapid node switching
  * - All child components are memoized
  */
 
@@ -44,14 +45,13 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
 
     // Ref for debounce timer - NOT state to avoid re-renders
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const fetchedIdRef = useRef<string | null>(null);
     // Generation counter: incremented on every selection change.
     // Async callbacks compare against this to discard stale results.
     const requestGenRef = useRef<number>(0);
 
-    // Fetch data when selection changes (debounced 50ms)
+    // Fetch data when selection changes
     useEffect(() => {
-        // Clear previous timer
+        // Clear any pending debounce timer from a previous selection
         if (debounceRef.current) {
             clearTimeout(debounceRef.current);
             debounceRef.current = null;
@@ -61,66 +61,82 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
             return;
         }
 
-        // Reset fetchedId so re-clicking the same node always triggers a fresh fetch.
-        // The generation counter below guards against true duplicate in-flight requests.
-        fetchedIdRef.current = null;
-
-        // Increment generation — any in-flight callbacks from previous
-        // selections will see a stale generation and discard their results
         const gen = ++requestGenRef.current;
+        const provider = getDataProvider(vscode);
 
-        debounceRef.current = setTimeout(async () => {
-            // Cancel only data-fetch requests (overview/deps/risks) from the previous
-            // selection. AI action requests intentionally run to completion.
-            const provider = getDataProvider(vscode);
-            provider.cancelDataRequests();
+        // ⚡ INSTANT PATH: If the data is already in cache (e.g. prefetched on hover),
+        // render immediately — no debounce, no spinner, no round-trip.
+        const cached = provider.peekCache(selectedId);
+        if (cached) {
+            setOverview(cached.overview as any);
+            setDeps(cached.deps as any);
+            setRisks(cached.risks as any);
+            return;
+        }
 
-            fetchedIdRef.current = selectedId;
+        // DEBOUNCED PATH: data not in cache — show loading state and fire batch request
+        const doFetch = (isRetry: boolean) => {
+            debounceRef.current = setTimeout(async () => {
+                // Cancel any previous in-flight data requests (not AI)
+                if (!isRetry) provider.cancelDataRequests();
 
-            // Set loading states BEFORE fetch
-            setLoadingOverview(true);
-            setLoadingDeps(true);
-            setLoadingRisks(true);
+                // Set loading states BEFORE fetch
+                setLoadingOverview(true);
+                setLoadingDeps(true);
+                setLoadingRisks(true);
 
-            // Fetch all sections in parallel
-            try {
-                const [overview, deps, risks] = await Promise.allSettled([
-                    provider.getOverview(selectedId, nodeType),
-                    provider.getDependencies(selectedId, nodeType),
-                    provider.getRisks(selectedId, nodeType),
-                ]);
+                try {
+                    // ⚡ Single batch round-trip: 1 message instead of 3
+                    const batch = await provider.getAll(selectedId, nodeType as any);
 
-                // Stale-response guard: discard if user has moved to a different node
-                if (requestGenRef.current !== gen) return;
+                    // Stale-response guard: discard if user moved to a different node
+                    if (requestGenRef.current !== gen) return;
 
-                if (overview.status === 'fulfilled') {
-                    setOverview(overview.value);
-                } else {
-                    setLoadingOverview(false);
-                    console.warn('Failed to fetch overview:', overview.reason);
+                    setOverview(batch.overview as any);
+                    setDeps(batch.deps as any);
+                    setRisks(batch.risks as any);
+
+                } catch (error) {
+                    if (requestGenRef.current !== gen) return;
+                    console.warn('[Inspector] Batch request failed, retrying individually...', error);
+
+                    // Retry once using individual requests as fallback
+                    if (!isRetry) {
+                        try {
+                            const [overview, deps, risks] = await Promise.allSettled([
+                                provider.getOverview(selectedId, nodeType as any),
+                                provider.getDependencies(selectedId, nodeType as any),
+                                provider.getRisks(selectedId, nodeType as any),
+                            ]);
+
+                            if (requestGenRef.current !== gen) return;
+
+                            if (overview.status === 'fulfilled') setOverview(overview.value as any);
+                            else setLoadingOverview(false);
+
+                            if (deps.status === 'fulfilled') setDeps(deps.value as any);
+                            else setLoadingDeps(false);
+
+                            if (risks.status === 'fulfilled') setRisks(risks.value as any);
+                            else setLoadingRisks(false);
+
+                        } catch (retryError) {
+                            if (requestGenRef.current !== gen) return;
+                            console.error('[Inspector] Retry also failed:', retryError);
+                            setLoadingOverview(false);
+                            setLoadingDeps(false);
+                            setLoadingRisks(false);
+                        }
+                    } else {
+                        setLoadingOverview(false);
+                        setLoadingDeps(false);
+                        setLoadingRisks(false);
+                    }
                 }
+            }, isRetry ? 300 : 150); // 150ms debounce on first try, 300ms on retry
+        };
 
-                if (deps.status === 'fulfilled') {
-                    setDeps(deps.value);
-                } else {
-                    setLoadingDeps(false);
-                    console.warn('Failed to fetch deps:', deps.reason);
-                }
-
-                if (risks.status === 'fulfilled') {
-                    setRisks(risks.value);
-                } else {
-                    setLoadingRisks(false);
-                    console.warn('Failed to fetch risks:', risks.reason);
-                }
-            } catch (error) {
-                if (requestGenRef.current !== gen) return;
-                console.error('Failed to fetch inspector data:', error);
-                setLoadingOverview(false);
-                setLoadingDeps(false);
-                setLoadingRisks(false);
-            }
-        }, 50); // 50ms debounce
+        doFetch(false);
 
         return () => {
             if (debounceRef.current) {
@@ -129,6 +145,7 @@ const InspectorPanel = memo(({ vscode, onClose, onFocusNode }: InspectorPanelPro
             }
         };
     }, [selectedId, nodeType, vscode, setOverview, setDeps, setRisks, setLoadingOverview, setLoadingDeps, setLoadingRisks]);
+
 
     // Handle dependency click - focus node in graph
     const handleDependencyClick = useCallback(

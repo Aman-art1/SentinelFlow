@@ -31,6 +31,7 @@ import { getRelatedNodes, clearRelationshipCache } from '../utils/relationshipDe
 
 import { perfMonitor } from '../utils/performance-monitor';
 import { applyBFSLayout } from '../utils/bfs-layout';
+import { getDataProvider } from '../panel/dataProvider';
 
 interface GraphCanvasProps {
     graphData: GraphData | null;
@@ -881,6 +882,28 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         return () => clearTimeout(layoutTimer);
     }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
 
+    // ⚡ BACKGROUND WARM: After graph settles, silently prefetch inspector data for
+    // all visible domain + file nodes (capped at 20). These are the most-clicked nodes,
+    // so they'll already be cached by the time the user clicks them.
+    useEffect(() => {
+        if (nodes.length === 0 || isLayouting) return;
+
+        const warmTimer = setTimeout(() => {
+            const provider = getDataProvider(vscode);
+            const topNodes = nodes
+                .filter(n => n.type === 'domainNode' || n.type === 'fileNode')
+                .slice(0, 20); // cap to avoid flooding the worker
+
+            for (const node of topNodes) {
+                const nodeType = node.type === 'domainNode' ? 'domain' : 'file';
+                // Fire-and-forget — silently warms the cache, errors are ignored
+                provider.getAll(node.id, nodeType as any).catch(() => { });
+            }
+        }, 2000); // 2s after graph settles so layout isn't competing
+
+        return () => clearTimeout(warmTimer);
+    }, [nodes, isLayouting, vscode]);
+
     // Handle Right Click (Context Menu) for locking/unlocking highlights
     const handleNodeContextMenu = useCallback(
         (event: React.MouseEvent, node: Node) => {
@@ -1034,6 +1057,23 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
         const clientY = event.clientY;
         const nodeData = node.data as any;
 
+        // In codebase detailed mode (maxDepth === 2), disable hover highlight for domain and file
+        // nodes — they cover large areas and cause frustrating accidental dimming of everything else.
+        // Only symbol/function nodes trigger highlighting in this mode.
+        const isDetailedCodebase = currentMode === 'codebase' && maxDepth === 2;
+        const isContainerNode = node.type === 'domainNode' || node.type === 'fileNode';
+        if (isDetailedCodebase && isContainerNode) {
+            return;
+        }
+
+        // ⚡ HOVER PREFETCH: Start loading inspector data immediately on hover — no delay.
+        // By the time the user clicks, the data is already cached → instant display.
+        // Fire-and-forget: errors are silently ignored, they don't affect hover UX.
+        const hoverNodeType = node.type === 'domainNode' ? 'domain'
+            : node.type === 'fileNode' ? 'file'
+                : 'symbol';
+        getDataProvider(vscode).getAll(node.id, hoverNodeType as any).catch(() => { });
+
         // Determine hover delay based on node type and view mode
         // Domains in architecture/codebase mode get a longer delay to prevent unintentional highlighting when panning/sliding
         let delay = 150;
@@ -1067,7 +1107,7 @@ const GraphCanvas = memo(({ graphData, vscode, onNodeClick, searchQuery }: Graph
                 });
             }
         }, delay);
-    }, [currentMode]);
+    }, [currentMode, maxDepth]);
 
     const handleNodeMouseLeave = useCallback(() => {
         // Immediate clear on leave for responsiveness

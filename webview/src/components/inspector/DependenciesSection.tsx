@@ -62,21 +62,24 @@ DependencyRow.displayName = 'DependencyRow';
 interface DependencyListProps {
     title: string;
     icon: string;
-    items: DependencyItem[];
+    items: DependencyItem[] | undefined | null;
     onItemClick: (id: string) => void;
     maxItems?: number;
 }
 
 const DependencyList = memo(
     ({ title, icon, items, onItemClick, maxItems = 10 }: DependencyListProps) => {
+        // Guard: items may be undefined if the data provider returns null for this dep group
+        const safeItems = items ?? [];
+
         const displayItems = useMemo(
-            () => (items.length > maxItems ? items.slice(0, maxItems) : items),
-            [items, maxItems]
+            () => (safeItems.length > maxItems ? safeItems.slice(0, maxItems) : safeItems),
+            [safeItems, maxItems]
         );
 
-        const hasMore = items.length > maxItems;
+        const hasMore = safeItems.length > maxItems;
 
-        if (items.length === 0) {
+        if (safeItems.length === 0) {
             return (
                 <div className="dependency-list empty">
                     <div className="dependency-list-header">
@@ -94,7 +97,7 @@ const DependencyList = memo(
                 <div className="dependency-list-header">
                     <span>{icon}</span>
                     <span>{title}</span>
-                    <span className="dependency-count">({items.length})</span>
+                    <span className="dependency-count">({safeItems.length})</span>
                 </div>
                 <div className="dependency-items">
                     {displayItems.map((item) => (
@@ -102,7 +105,7 @@ const DependencyList = memo(
                     ))}
                     {hasMore && (
                         <div className="dependency-more">
-                            +{items.length - maxItems} more...
+                            +{safeItems.length - maxItems} more...
                         </div>
                     )}
                 </div>
@@ -125,19 +128,19 @@ const DependenciesSection = memo(({ onDependencyClick }: DependenciesSectionProp
         switch (nodeType) {
             case 'symbol':
                 return [
-                    { title: 'Calls', icon: '→', items: deps.calls },
-                    { title: 'Called By', icon: '←', items: deps.calledBy },
+                    { title: 'Calls', icon: '→', items: deps.calls ?? [] },
+                    { title: 'Called By', icon: '←', items: deps.calledBy ?? [] },
                 ];
             case 'file':
                 return [
-                    { title: 'Imports', icon: '→', items: deps.imports },
-                    { title: 'Used By', icon: '←', items: deps.usedBy },
+                    { title: 'Imports', icon: '→', items: deps.imports ?? [] },
+                    { title: 'Used By', icon: '←', items: deps.usedBy ?? [] },
                 ];
             case 'domain':
                 // Domains show file-level dependencies
                 return [
-                    { title: 'Files', icon: '📄', items: deps.imports },
-                    { title: 'Depends On', icon: '→', items: deps.calls },
+                    { title: 'Files', icon: '📄', items: deps.imports ?? [] },
+                    { title: 'Depends On', icon: '→', items: deps.calls ?? [] },
                 ];
             default:
                 return [];

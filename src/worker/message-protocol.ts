@@ -78,6 +78,11 @@ export type WorkerRequest =
             vertexProject?: string;
             groqApiKey?: string;
             geminiApiKey?: string;
+            awsRegion?: string;
+            bedrockModelId?: string;
+            awsAccessKeyId?: string;
+            awsSecretAccessKey?: string;
+            aiProvider?: 'gemini' | 'bedrock';
         };
     }
     | {
@@ -126,6 +131,19 @@ export type WorkerRequest =
         requestId: string;
         nodeId: string;
         metric: string;
+    }
+    | {
+        // Batched request: fetches overview + deps + risks in a single round-trip
+        type: 'inspector-batch';
+        id: string;
+        requestId: string;
+        nodeId: string;
+        nodeType: 'domain' | 'file' | 'symbol';
+    }
+    | {
+        // Signals that the index was refreshed — caches should be invalidated
+        type: 'inspector-invalidate-cache';
+        id: string;
     }
     | {
         type: 'refine-graph';
@@ -281,6 +299,17 @@ export type WorkerResponse =
         requestId: string;
         content: string;
         model: string;
+    }
+    | {
+        // Batched response: all three data types in one message
+        type: 'inspector-batch-result';
+        id: string;
+        requestId: string;
+        data: {
+            overview: InspectorOverviewData;
+            deps: InspectorDependencyData;
+            risks: InspectorRiskData;
+        };
     }
     | {
         type: 'refine-graph-complete';
