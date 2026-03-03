@@ -1,0 +1,726 @@
+{
+  "symbols": [
+    {
+      "id": 121,
+      "name": "main",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 10,
+        "startColumn": 7,
+        "endLine": 24,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 122,
+      "name": "calc",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 12,
+        "startColumn": 4,
+        "endLine": 12,
+        "endColumn": 34
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 123,
+      "name": "sum",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 13,
+        "startColumn": 4,
+        "endLine": 13,
+        "endColumn": 32
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 124,
+      "name": "product",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 14,
+        "startColumn": 4,
+        "endLine": 14,
+        "endColumn": 40
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 125,
+      "name": "runner",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 20,
+        "startColumn": 4,
+        "endLine": 20,
+        "endColumn": 36
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 126,
+      "name": "processAndTest",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 29,
+        "startColumn": 7,
+        "endLine": 32,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 127,
+      "name": "config",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "range": {
+        "startLine": 37,
+        "startColumn": 7,
+        "endLine": 40,
+        "endColumn": 2
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 128,
+      "name": "Calculator",
+      "type": "class",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 7,
+        "startColumn": 7,
+        "endLine": 43,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 129,
+      "name": "add",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 13,
+        "startColumn": 4,
+        "endLine": 17,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 130,
+      "name": "result",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 14,
+        "startColumn": 8,
+        "endLine": 14,
+        "endColumn": 29
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 131,
+      "name": "multiply",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 22,
+        "startColumn": 4,
+        "endLine": 26,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 132,
+      "name": "result",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 23,
+        "startColumn": 8,
+        "endLine": 23,
+        "endColumn": 29
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 133,
+      "name": "subtract",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 31,
+        "startColumn": 4,
+        "endLine": 35,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 134,
+      "name": "result",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 32,
+        "startColumn": 8,
+        "endLine": 32,
+        "endColumn": 29
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 135,
+      "name": "getHistory",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 40,
+        "startColumn": 4,
+        "endLine": 42,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 136,
+      "name": "helperFn",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 48,
+        "startColumn": 7,
+        "endLine": 50,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 137,
+      "name": "formatResult",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "range": {
+        "startLine": 55,
+        "startColumn": 7,
+        "endLine": 57,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 138,
+      "name": "runTests",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 9,
+        "startColumn": 7,
+        "endLine": 23,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 139,
+      "name": "calc",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 10,
+        "startColumn": 4,
+        "endLine": 10,
+        "endColumn": 34
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 140,
+      "name": "sum",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 13,
+        "startColumn": 4,
+        "endLine": 13,
+        "endColumn": 33
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 141,
+      "name": "product",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 17,
+        "startColumn": 4,
+        "endLine": 17,
+        "endColumn": 40
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 142,
+      "name": "helperResult",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 21,
+        "startColumn": 4,
+        "endLine": 21,
+        "endColumn": 36
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 143,
+      "name": "TestRunner",
+      "type": "class",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 28,
+        "startColumn": 7,
+        "endLine": 55,
+        "endColumn": 1
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 144,
+      "name": "run",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 34,
+        "startColumn": 4,
+        "endLine": 37,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 145,
+      "name": "runWithCalculator",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 42,
+        "startColumn": 4,
+        "endLine": 47,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 146,
+      "name": "calc",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 43,
+        "startColumn": 8,
+        "endLine": 43,
+        "endColumn": 38
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 147,
+      "name": "result",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 44,
+        "startColumn": 8,
+        "endLine": 44,
+        "endColumn": 38
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 148,
+      "name": "getResults",
+      "type": "method",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 52,
+        "startColumn": 4,
+        "endLine": 54,
+        "endColumn": 5
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 149,
+      "name": "quickTest",
+      "type": "function",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 60,
+        "startColumn": 7,
+        "endLine": 63,
+        "endColumn": 2
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    },
+    {
+      "id": 150,
+      "name": "calc",
+      "type": "variable",
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "range": {
+        "startLine": 61,
+        "startColumn": 4,
+        "endLine": 61,
+        "endColumn": 34
+      },
+      "complexity": 1,
+      "domain": "test",
+      "purpose": null,
+      "impactDepth": null,
+      "fragility": null,
+      "riskScore": null,
+      "riskReason": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 69,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:sum:13",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:add:13",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 70,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:product:14",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:multiply:22",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 71,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 72,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:run:34",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 73,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:processAndTest:29",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 74,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:processAndTest:29",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 75,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:sum:13",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:add:13",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 76,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:product:17",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:multiply:22",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 77,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:helperResult:21",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:helperFn:48",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 78,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:run:34",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 79,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:result:44",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:add:13",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 80,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:quickTest:60",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:add:13",
+      "type": "call",
+      "reason": null
+    },
+    {
+      "id": 81,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:Calculator:7",
+      "type": "import",
+      "reason": null
+    },
+    {
+      "id": 82,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "type": "import",
+      "reason": null
+    },
+    {
+      "id": 83,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts:main:10",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:TestRunner:28",
+      "type": "import",
+      "reason": null
+    },
+    {
+      "id": 84,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:Calculator:7",
+      "type": "import",
+      "reason": null
+    },
+    {
+      "id": 85,
+      "source": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts:runTests:9",
+      "target": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts:helperFn:48",
+      "type": "import",
+      "reason": null
+    }
+  ],
+  "files": [
+    {
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileA.ts",
+      "contentHash": "fdec6c2944a5c8be5a8a9e92b0321d5527af539360d90403a668a67a195ae404",
+      "lastIndexedAt": "2026-02-28T06:48:29.477Z"
+    },
+    {
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileB.ts",
+      "contentHash": "9cb2ce9564d7f37bbe4a2a9d392105f07d032d465676fd866b766ffcb1e3896b",
+      "lastIndexedAt": "2026-02-28T06:48:29.527Z"
+    },
+    {
+      "filePath": "/home/unshakensoul/Documents/Projects and Notes/Projects/Architect AI/code-indexer-extension/test/validation-project/fileC.ts",
+      "contentHash": "85b3a3ee95a2467a313b7be673bc05f24de3322187937d2e9639adb33c9b37b0",
+      "lastIndexedAt": "2026-02-28T06:48:29.557Z"
+    }
+  ],
+  "domains": [
+    {
+      "domain": "test",
+      "symbolCount": 30,
+      "health": {
+        "domain": "test",
+        "symbolCount": 30,
+        "avgComplexity": 1,
+        "coupling": 0,
+        "healthScore": 97,
+        "status": "healthy"
+      }
+    }
+  ]
+}
