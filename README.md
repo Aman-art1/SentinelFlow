@@ -9,238 +9,428 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-orange)](./package.json)
+[![WASM Only](https://img.shields.io/badge/native%20modules-none%20(WASM%20only)-brightgreen)](./package.json)
 
-*Parse → Index → Visualize → Ask AI — all inside VS Code.*
+*Parse → Index → Visualize → Analyze — all inside VS Code, zero UI freeze.*
 
 </div>
 
 ---
 
-## 📖 Description
+## 📖 What is Sentinel Flow?
 
-**Sentinel Flow** is a VS Code extension that builds a living, AI-enriched graph of your entire codebase. It parses TypeScript, Python, and C source files using Tree-sitter (WebAssembly), stores all extracted symbols and call/import edges in an in-process SQLite database (sql.js/WASM), and renders an interactive code graph inside a VS Code panel. A background Worker Thread handles all CPU-intensive work to keep your editor completely responsive.
+**Sentinel Flow** is a production VS Code extension that builds a **living, AI-enriched dependency graph** of your codebase. It parses TypeScript, Python, and C source files using Tree-sitter (WebAssembly), stores every extracted symbol and call/import edge in an embedded SQLite database (sql.js/WASM), and renders an interactive code graph inside a VS Code panel.
 
-An AI Orchestrator layer routes your natural-language questions to either **Groq (Llama 3.1)** for fast sub-300ms answers or **Google Gemini 1.5 Pro** for deep architectural analysis — using your indexed codebase as structured context.
+A background **Worker Thread** handles all CPU-intensive work (parsing, DB writes, AI calls) so your editor stays completely responsive. An **AI Orchestrator** routes questions to Groq/Llama 3.1 for fast (<300 ms) answers or Google Gemini 1.5 Pro / Amazon Bedrock for deep architectural analysis — using your indexed codebase as structured context.
 
-### ✨ Key Highlights
+### Core Design Principles
 
-- 🧠 **AI-powered code analysis** — Explain, Audit, Refactor, or Optimize any symbol with one click
-- 🕸️ **Interactive code graph** — Visualize call graphs, import trees, and architecture skeletons with ReactFlow + D3
-- ⚡ **Zero UI freeze** — All indexing and AI work runs in a background worker thread
-- 🔍 **Smart search** — Find symbols by name, jump to definition, filter graph by directory
-- 🔄 **Incremental indexing** — File watcher re-indexes only changed files
-- 📊 **"Heat" CodeLens** — See complexity scores inline in your editor
-- 🏗️ **No native modules** — Fully cross-platform via WebAssembly (no native recompilation)
+| Principle | What it means |
+|---|---|
+| **Zero UI freezes** | All heavy work runs in a background Worker Thread — never the VS Code main thread |
+| **Advisor-only** | The extension reads and explains code; it never modifies or deletes source files |
+| **No native modules** | Fully cross-platform via WebAssembly — ships as a single `.vsix` with no recompilation |
+| **Incremental everything** | Only changed files (SHA-256 hash compared) are re-parsed on subsequent index runs |
 
 ---
 
-## 🛠️ Tech Stack
+## ✨ Feature Highlights
+
+### 🕸️ Three-Mode Interactive Graph
+- **Architecture mode** — high-level file-to-file import skeleton (ELK hierarchical layout)
+- **Codebase mode** — domain → file → symbol hierarchy with 3-level LOD depth control (ELK layered)
+- **Trace mode** — BFS call-path visualization from any selected function
+
+### 🔍 Inspector Panel
+Click any graph node to instantly see:
+- **Overview** — file count, symbol count, complexity, health score, coupling %
+- **Dependencies** — what this node calls / what calls it
+- **Risks** — static metrics, AI fragility flags, and technical debt items
+- **AI Actions** — Explain / Audit / Refactor / Optimize with one click
+
+### 🧠 AI Orchestration
+- **Fast path (Groq / Llama 3.1-8B-Instant)** — <300 ms for Inspector actions
+- **Deep path (Gemini 1.5 Pro / Amazon Bedrock Nova 2)** — architectural analysis
+- **Automatic fallback** — deep path falls back to Groq with a ⚠️ notice if unavailable
+- **Response caching** — AI results cached in SQLite; instant on repeats
+
+### 📊 CodeLens in Your Editor
+- Complexity score displayed above every function
+- ⚠️ warning when complexity > 15; 🔴 critical when fan-in > 20
+- `⚡ Trace` action that opens the call-trace graph for any function
+
+### ⚡ Incremental Indexing + File Watcher
+- SHA-256 content hash check on every run — unchanged files skip re-parsing entirely
+- File watcher re-indexes only modified files on save (1-second debounce batch)
+- Memory guard: worker auto-restarts at 1 GB heap and resumes without data loss
+
+---
+
+## 🛠️ Technology Stack
 
 | Layer | Technology |
 |---|---|
-| **Language** | TypeScript 5.3 |
-| **Extension Host** | VS Code Extension API (^1.85.0) |
-| **Code Parsing** | Tree-sitter (WebAssembly via `web-tree-sitter`) |
-| **Database** | SQLite via `sql.js` (WebAssembly) + `drizzle-orm` |
-| **AI — Fast Path** | Groq API / Llama 3.1-8B-Instant |
-| **AI — Deep Path** | Google Gemini 1.5 Pro / Vertex AI |
-| **Webview UI** | React 18, ReactFlow, D3, Zustand, TailwindCSS |
-| **Graph Layout** | Dagre, ELK, D3 Force |
-| **Bundler** | esbuild (extension) + Vite (webview) |
+| Language | TypeScript 5.3 |
+| Extension Host | VS Code Extension API (≥ 1.85.0) |
+| Code Parsing | web-tree-sitter (WASM) + tree-sitter-wasms grammars |
+| Database | sql.js (WebAssembly SQLite) + Drizzle ORM |
+| AI — Fast Path | Groq API / Llama 3.1-8B-Instant |
+| AI — Deep Path | Google Gemini 1.5 Pro, Vertex AI, or Amazon Bedrock Nova 2 |
+| Webview UI | React 18, @xyflow/react (ReactFlow), Zustand, TailwindCSS |
+| Graph Layout | ELK (hierarchical/layered), Dagre, custom BFS layout |
+| Bundler | esbuild (extension) + Vite (webview) |
 
 ---
 
 ## 🚀 Installation
 
-### From VSIX (Recommended)
+### Option A — From VSIX (Recommended for users)
 
-1. Download the latest `.vsix` from [Releases](#)
-2. In VS Code: `Extensions` → `···` → `Install from VSIX…`
-3. Select the downloaded file
+1. Download `sentinel-flow-extension-0.1.0.vsix` from the project directory (or a release)
+2. In VS Code: **Extensions** → `···` → **Install from VSIX…**
+3. Select the `.vsix` file
 
-### From Source
+### Option B — From Source (Developers)
 
-**Prerequisites:** Node.js ≥ 20, npm, VS Code ≥ 1.85.0
+**Prerequisites:** Node.js ≥ 20.0.0, npm, VS Code ≥ 1.85.0
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/sentinel-flow.git
-cd sentinel-flow
+# 1. Clone the repository
+git clone https://github.com/innovators-of-ai/sentinel-flow-extension.git
+cd sentinel-flow-extension
 
-# Install dependencies and build
+# 2. Install extension dependencies
 npm install
-npm run build
-```
 
-Then press **F5** in VS Code to launch the Extension Development Host.
+# 3. Build everything (webview SPA + extension bundles + copy WASM)
+npm run build
+
+# 4. Launch in Extension Development Host
+# Press F5 in VS Code — or run:
+code --extensionDevelopmentPath=$(pwd)
+```
 
 ---
 
 ## ⚙️ Configuration
 
-After installing, configure your AI API keys via the command palette:
+### Quick Setup — Command Palette
 
 ```
-Sentinel Flow: Configure AI Keys
+Ctrl+Shift+P → Sentinel Flow: Configure AI Keys
 ```
 
-Or manually in VS Code settings (`settings.json`):
+This opens a guided wizard to set your Groq, Gemini, and/or Vertex AI keys.
+
+### Manual Setup — `settings.json`
 
 ```json
 {
-  "codeIndexer.groqApiKey": "gsk_...",
-  "codeIndexer.geminiApiKey": "AIza...",
-  "codeIndexer.vertexProject": "my-gcp-project-id"
+  "sentinelFlow.groqApiKey":         "gsk_...",
+  "sentinelFlow.geminiApiKey":       "AIza...",
+  "sentinelFlow.vertexProject":      "my-gcp-project-id",
+
+  "sentinelFlow.aiProvider":         "gemini",
+
+  "sentinelFlow.awsRegion":          "us-east-1",
+  "sentinelFlow.bedrockModelId":     "us.amazon.nova-2-lite-v1:0",
+  "sentinelFlow.awsAccessKeyId":     "AKIA...",
+  "sentinelFlow.awsSecretAccessKey": "...",
+
+  "sentinelFlow.useLSP":             false
 }
 ```
 
-> **Note:** Both Groq and Gemini keys are optional — the extension fully works for indexing and visualization without AI keys. AI features gracefully degrade to "not available" messages.
+> **No AI keys required for core functionality.** Indexing, visualization, and graph navigation all work without any API keys. AI features gracefully degrade to descriptive "key not configured" messages.
+
+### AI Provider Selection
+
+Switch between **Gemini** and **Amazon Bedrock** as the strategic (deep) analysis provider using the toggle in the Sentinel Flow sidebar, or via:
+
+```json
+"sentinelFlow.aiProvider": "bedrock"
+```
 
 ---
 
-## 📋 Usage
+## 📋 Usage Guide
 
-### 1. Index Your Workspace
+### Step 1 — Index Your Workspace
 
-Open a workspace and run:
 ```
 Ctrl+Shift+P → Sentinel Flow: Index Workspace
 ```
 
-The extension will parse all `.ts/.tsx/.py/.c/.h` files and build the code graph. Only changed files are re-indexed on subsequent runs.
+The extension will:
+1. Discover all `.ts`, `.tsx`, `.py`, `.c`, `.h` files
+2. Compute SHA-256 hashes and skip unchanged files
+3. Parse changed files with Tree-sitter in the background
+4. Store symbols, edges, and file hashes in the embedded SQLite DB
+5. Show a progress notification: `Processing N/M files...`
 
-### 2. Visualize the Code Graph
+Subsequent runs only re-index what changed. Large workspaces (10,000+ files) typically complete in 2–5 minutes on first run; incremental runs are seconds.
+
+### Step 2 — Open the Code Graph
 
 ```
 Ctrl+Shift+P → Sentinel Flow: Visualize Code Graph
 ```
 
-This opens the interactive graph panel. Switch between views:
-- **Codebase** — Full domain → file → symbol hierarchy
-- **Architecture** — High-level file-to-file dependency skeleton
-- **Trace** — BFS call trace from a selected function
+The interactive graph panel opens. Use the **View Mode Bar** to switch:
 
-### 3. Ask AI About Any Symbol
+| Mode | Shortcut | What you see |
+|---|---|---|
+| **Architecture** | Click "Architecture" | File/folder dependency skeleton |
+| **Codebase** | Click "Codebase" | Domain → File → Symbol hierarchy |
+| **Trace** | Click a function CodeLens → ⚡ Trace | BFS call path from that function |
 
-1. Click any node in the graph to open the **Inspector Panel**
-2. Use the **Actions** tab to: Explain, Audit, Refactor, or Optimize
-3. The AI receives the symbol's source code + its dependency graph as context
+Use the **Depth slider** (0, 1, 2) in Codebase mode to control Level of Detail:
+- Depth 0 → Domain nodes only (fastest)
+- Depth 1 → + File nodes (default)
+- Depth 2 → + Symbol nodes (full detail)
 
-### 4. CodeLens in the Editor
+### Step 3 — Explore with the Inspector Panel
 
-Supported files (`.ts`, `.tsx`, `.py`, `.c`) show inline CodeLens:
-- **Heat Score** — cyclomatic complexity indicator
-- **Trace** — opens a BFS call trace starting from that function
+Click any node in the graph to open the **Inspector Panel** on the right:
 
-### 5. Directory Module Graph
+1. **Overview tab** — name, path, file/symbol counts, health score, average complexity
+2. **Dependencies tab** — what this node calls, what calls it, imports, exports
+3. **Risks tab** — heat score (0–100), risk level, warnings from static analysis + AI flags + technical debt
+4. **AI Actions** (symbol nodes) — click **Explain**, **Audit**, **Refactor**, or **Optimize**
+
+### Step 4 — Use CodeLens in the Editor
+
+Open any `.ts`, `.py`, or `.c` file. You'll see CodeLens above each function:
+
+```typescript
+// [Heat: 7]  [⚡ Trace]
+async function processPayment(order: Order): Promise<Receipt> {
+```
+
+Click `⚡ Trace` to open the call-trace graph starting from that function.
+
+### Step 5 — Directory Module Graph
 
 Right-click any folder in the Explorer → **Sentinel Flow: View Module Graph**
 
+This filters the graph to show only nodes within that directory.
+
 ---
 
-## 💻 Commands
+## 💻 Commands Reference
 
 | Command | Description |
 |---|---|
-| `Sentinel Flow: Index Workspace` | Parse and index all supported files |
-| `Sentinel Flow: Visualize Code Graph` | Open the graph visualization panel |
-| `Sentinel Flow: Configure AI Keys` | Set Groq / Gemini / Vertex API keys |
-| `Sentinel Flow: Refine Architecture Labels with AI` | AI-generated domain/file labels |
-| `Sentinel Flow: Query Symbols` | Search for a symbol by name |
-| `Sentinel Flow: Export Graph as JSON` | Save full graph to `code-graph.json` |
-| `Sentinel Flow: Export Architecture Skeleton as JSON` | Save file-level skeleton to JSON |
-| `Sentinel Flow: Clear Index` | Wipe the SQLite index |
-| `Sentinel Flow: Toggle File Watcher` | Enable/disable incremental re-indexing |
+| `Sentinel Flow: Index Workspace` | Parse and index all supported files in the workspace |
+| `Sentinel Flow: Visualize Code Graph` | Open the interactive graph visualization panel |
+| `Sentinel Flow: Configure AI Keys` | Set Groq / Gemini / Vertex API keys via input boxes |
+| `Sentinel Flow: Refine Architecture Labels with AI` | AI-generated labels for architecture view nodes |
+| `Sentinel Flow: Refine Graph with AI (Architect Pass)` | Run full AI pass: purpose inference, risk scoring, implicit links |
+| `Sentinel Flow: Query Symbols` | Search for any symbol by name (Quick Pick with jump-to-definition) |
+| `Sentinel Flow: Export Graph as JSON` | Save full symbol + edge graph to `code-graph.json` |
+| `Sentinel Flow: Export Architecture Skeleton as JSON` | Save file-level skeleton to `architecture-skeleton.json` |
+| `Sentinel Flow: Clear Index` | Wipe the SQLite index completely |
+| `Sentinel Flow: Toggle File Watcher` | Enable / disable incremental re-indexing on file save |
+| `Sentinel Flow: View Module Graph` *(context menu)* | Filter graph to a specific directory |
 
 ---
 
-## 📸 Screenshots
-
-<!-- TODO: Add screenshots of the graph visualization, inspector panel, and CodeLens -->
-
-| Code Graph View | Inspector Panel | Architecture View |
-|---|---|---|
-| *(screenshot)* | *(screenshot)* | *(screenshot)* |
-
----
-
-## 📁 Folder Structure
+## 📁 Project Structure
 
 ```
 sentinel-flow/
-├── src/                    # Extension host source (TypeScript)
-│   ├── extension.ts        # Entry point — activation & commands
-│   ├── webview-provider.ts # Graph panel provider
-│   ├── sidebar-provider.ts # Sidebar view provider
-│   ├── codelens-provider.ts# Heat + Trace CodeLens
-│   ├── file-watcher.ts     # Incremental re-index on save
-│   ├── ai/                 # AI orchestration
-│   │   ├── orchestrator.ts # Intent routing → model selection → cache
-│   │   ├── intent-router.ts# Reflex vs Strategic classification
-│   │   ├── groq-client.ts  # Llama 3.1 client
-│   │   ├── gemini-client.ts# Gemini 1.5 Pro client
-│   │   └── vertex-client.ts# Vertex AI client
-│   ├── db/                 # Database layer
-│   │   ├── database.ts     # sql.js wrapper (symbols, edges, cache)
-│   │   └── schema.ts       # Drizzle ORM schema
-│   └── worker/             # Background worker thread
-│       ├── worker.ts       # IndexWorker (parsing + DB + AI)
-│       ├── worker-manager.ts  # Host-side lifecycle + RPC
-│       ├── parser.ts       # TreeSitterParser wrapper
-│       ├── symbol-extractor.ts # AST → symbols + edges
-│       ├── composite-index.ts  # O(1) edge resolution index
-│       └── message-protocol.ts # Typed request/response unions
-├── webview/                # Webview SPA (React + ReactFlow)
-│   └── src/
-│       ├── App.tsx         # Root component + VS Code message bridge
-│       ├── components/     # GraphCanvas, InspectorPanel, nodes, edges
-│       ├── stores/         # Zustand graph + inspector stores
-│       └── utils/          # Layout algorithms, performance monitor
-├── resources/              # Extension icon
-├── test/                   # Validation scripts
-├── dist/                   # Built output (git-ignored)
-└── package.json            # Manifest + build scripts
+├── src/                          # Extension Host + Worker Thread (TypeScript)
+│   ├── extension.ts              # Activation, command registration, orchestration (798 lines)
+│   ├── webview-provider.ts       # GraphWebviewProvider — full panel webview
+│   ├── sidebar-provider.ts       # SidebarProvider — activity-bar sidebar
+│   ├── codelens-provider.ts      # HeatCodeLensProvider + TraceCodeLensProvider
+│   ├── file-watcher.ts           # FileWatcherManager — 1 s debounce batch watcher
+│   ├── ai/
+│   │   ├── orchestrator.ts       # AIOrchestrator — dual-path routing + cAST prompt building
+│   │   ├── intent-router.ts      # Reflex vs. strategic query classification
+│   │   ├── groq-client.ts        # Groq / Llama 3.1 API client
+│   │   ├── gemini-client.ts      # Google Gemini 1.5 Pro client
+│   │   ├── vertex-client.ts      # Vertex AI client
+│   │   ├── bedrock-client.ts     # Amazon Bedrock Nova 2 client
+│   │   └── debt-detector.ts      # Technical debt smell detector
+│   ├── db/
+│   │   ├── database.ts           # CodeIndexDatabase — sql.js WASM wrapper (59 KB)
+│   │   └── schema.ts             # Drizzle ORM table definitions (8 tables)
+│   ├── domain/
+│   │   ├── classifier.ts         # Heuristic + AI domain classification
+│   │   └── health.ts             # Domain health score computation
+│   └── worker/
+│       ├── worker.ts             # IndexWorker — all core operations (1,160 lines)
+│       ├── worker-manager.ts     # WorkerManager — lifecycle + typed RPC proxy (560 lines)
+│       ├── parser.ts             # TreeSitterParser WASM bootstrap
+│       ├── symbol-extractor.ts   # AST → symbols + pending edges (27 KB)
+│       ├── composite-index.ts    # O(1) CompositeIndex + edge resolution
+│       ├── string-registry.ts    # Integer-interned string store
+│       ├── inspector-service.ts  # Inspector Panel business logic (580 lines)
+│       ├── impact-analyzer.ts    # Blast radius BFS/DFS
+│       └── message-protocol.ts   # Typed IPC message unions
+├── webview/src/
+│   ├── App.tsx                   # Root component + VS Code message bridge (449 lines)
+│   ├── components/
+│   │   ├── GraphCanvas.tsx       # Main ReactFlow canvas (60 KB — core render loop)
+│   │   ├── DomainNode.tsx        # Domain node renderer
+│   │   ├── FileNode.tsx          # File node renderer
+│   │   ├── SymbolNode.tsx        # Symbol node renderer
+│   │   ├── ViewModeBar.tsx       # Architecture/Codebase/Trace mode bar
+│   │   ├── ImpactSidePanel.tsx   # Blast radius visualization panel
+│   │   ├── SunburstGraph.tsx     # D3 sunburst chart
+│   │   └── inspector/            # 10-file Inspector Panel component suite
+│   ├── stores/
+│   │   ├── useGraphStore.ts      # Zustand: graph data, view mode, skeleton, trace
+│   │   └── useInspectorStore.ts  # Zustand: node selection, tab data, cache
+│   ├── utils/
+│   │   ├── elk-layout.ts         # ELK hierarchical + layered layout (14 KB)
+│   │   ├── bfs-layout.ts         # BFS layout for Trace view (7 KB)
+│   │   ├── graphFilter.ts        # LOD filter, search filter, directory scope filter
+│   │   ├── metrics.ts            # Fan-in/out, complexity calculations
+│   │   └── performance.ts        # RAF-based FPS monitor
+│   └── panel/
+│       └── dataProvider.ts       # Inspector data fetch + Zustand cache layer
+├── resources/icon.svg
+├── test/
+├── drizzle.config.ts
+├── package.json
+├── requirements.md               # Functional + non-functional requirements (21 FRs)
+├── design.md                     # Full technical design + architecture
+└── README.md                     # This file
 ```
 
 ---
 
-## ⚡ Performance & Scaling
+## ⚡ Performance Engineering
 
-### 🔧 Indexing Pipeline
+### Indexing Pipeline
 
-- **Worker Thread isolation** — parsing and DB writes never block the VS Code UI
-- **O(1) edge resolution** — `CompositeIndex` (inverted index by name × path × line) resolves call/import edges without linear scans
-- **String interning** — `StringRegistry` interns symbol names/paths as integer IDs to cut heap allocations in batch runs
-- **Content hash dedup** — unchanged files are skipped entirely on re-index
-- **Progressive batch flushing** — symbols flushed to SQLite in 500-symbol chunks to prevent memory spikes
-- **Post-index optimization** — SQLite `ANALYZE` + `VACUUM` run after bulk indexing
-- **AI response caching** — responses cached in SQLite by SHA hash of symbol code + query; instant on repeat
-- **Memory guard** — worker auto-exits at 1 GB heap and is automatically restarted by the extension host
+The indexer is built around a **three-pass, zero-waste** architecture:
 
-### 🔭 Level of Detail (LOD)
+```
+Pass 1 (hash only)   — Read file → SHA-256 hash → drop content from RAM
+Pass 2 (diff check)  — Batch hash comparison in SQLite → get changed paths only
+Pass 3 (parse only)  — Read + parse ONLY the ~1–5% of files that actually changed
+```
 
-The graph uses a **3-tier LOD system** controlled by the Depth Selector:
-
-| Depth | Visible nodes | Use case |
+| Optimization | Technique | Effect |
 |---|---|---|
-| **0** | Domains only | Macro overview, fastest render |
-| **1** | Domains + Files | Structural map *(default)* |
-| **2** | Domains + Files + Symbols | Full detail, micro view |
+| Content-hash dedup | SHA-256 per file before any parse | Unchanged files use 0 CPU, 0 RAM |
+| O(1) edge resolution | `CompositeIndex` (name × path × line inverted index) | No linear scans for call/import edges |
+| String interning | `StringRegistry` integer IDs per batch | 30–60% less heap allocation in large workspaces |
+| Progressive flushing | Symbols flushed to SQLite in 500-symbol chunks | Memory stays flat even for 15,000-file monorepos |
+| Periodic disk saves | Every 50 files during bulk batch | Prevents total data loss on OOM crash |
+| Post-index optimization | SQLite `ANALYZE` + `VACUUM` post-batch | Fast query performance maintained |
+| Worker auto-restart | Exit at 1 GB heap → host spawns new worker | Automatic recovery with queued-request drain |
 
-- Nodes below the active depth are **never instantiated** — zero memory, zero layout cost
-- Each domain/file node can be **collapsed individually**, independent of the global depth
-- **Edge redirection** — edges to collapsed nodes are re-routed to their parent so the graph stays connected
-- **Edge deduplication** — duplicate `source → target` pairs (common at low depth) are merged into one edge
-- **Edge sampling** — if edges exceed 10,000, they are uniformly sampled to keep ReactFlow performant
-- **Live FPS counter** — color-coded 🟢/🟡/🔴 indicator updated via direct DOM mutation (no React overhead)
+### Graph Rendering
+
+| Optimization | Technique | Effect |
+|---|---|---|
+| LOD system | Nodes below active depth never instantiated | 0 VDOM nodes, 0 layout cost for invisible tiers |
+| Edge rerouting | Collapsed subtree edges re-route to parent | Dense subgraphs reduce to 1–3 edges |
+| Edge sampling | Uniform sample if edges > 10,000 | Maintains 60 FPS in huge codebases |
+| FPS counter | Direct `ref.textContent` DOM mutation | Zero React re-renders for FPS updates |
+| Inspector cache | Zustand Map<nodeId, data> | Instant re-display on repeated node clicks |
+
+---
+
+## 🗄️ Database Schema Summary
+
+The embedded SQLite DB stores 8 tables:
+
+| Table | Purpose |
+|---|---|
+| `symbols` | All extracted symbols with location, complexity, domain, and AI fields |
+| `edges` | Directed relationships: `call`, `import`, `inherit`, `implement` |
+| `files` | File tracking: path, SHA-256 content hash, last indexed timestamp |
+| `meta` | Key-value store (last index time, workspace root, etc.) |
+| `ai_cache` | SHA-256-keyed AI response cache — instant cache hits |
+| `domain_metadata` | Health score, complexity, coupling, symbol count per domain |
+| `domain_cache` | Per-symbol AI domain classification with confidence score |
+| `technical_debt` | Code smells per symbol: type, severity, description |
+
+---
+
+## 🤖 AI Architecture
+
+### Dual-Path Routing
+
+```
+Any AI request
+    │
+    ├── REFLEX PATH (always for Inspector actions)
+    │     └── Groq / Llama 3.1-8B-Instant
+    │         Target: <300 ms
+    │
+    └── STRATEGIC PATH (for deep architectural queries)
+          ├── sentinelFlow.aiProvider = "gemini"
+          │     └── Google Gemini 1.5 Pro (or Vertex AI)
+          └── sentinelFlow.aiProvider = "bedrock"
+                └── Amazon Bedrock Nova 2
+          │
+          └── If strategic fails → automatic fallback to Reflex + ⚠️ banner
+```
+
+### cAST Prompt Format
+
+AI prompts are structured as **Contextual AST** (cAST) to avoid LLM "Lost in the Middle" confusion:
+
+1. **Target symbol source** — raw code of the selected function/class (1 disk read)
+2. **Dependency stubs JSON** — lightweight metadata for each caller/callee (zero neighbor file reads)
+3. **Chain-of-Thought instruction** — identify architectural patterns before answering
+4. **The actual question or action prompt**
+
+### Response Caching
+
+Every AI response is cached in SQLite keyed by `SHA-256(query + targetCode + outgoingIds + incomingIds + analysisType)`. Repeat queries on unchanged code return instantly.
+
+---
+
+## 📡 Worker IPC Protocol
+
+Communication between Extension Host and Worker Thread uses typed discriminated union messages (see `src/worker/message-protocol.ts`).
+
+**Key message types:**
+
+| Request → Worker | Purpose |
+|---|---|
+| `initialize` | Boot worker, open DB, load WASM grammars |
+| `parse-batch` | Parse + index a batch of files |
+| `check-file-hash-batch` | Check which files need re-parsing |
+| `inspector-batch` | Get overview + deps + risks in one round-trip |
+| `inspector-ai-action` | Trigger explain/audit/refactor/optimize |
+| `get-architecture-skeleton` | Get file-level dependency graph |
+| `trace-function` | Get BFS call trace for a symbol |
+| `ai-query` | General AI query with optional symbol context |
+| `refine-graph` | Full AI Architect Pass (purpose, risk, implicit links) |
+
+**Timeout policy:**
+
+| Operation | Timeout |
+|---|---|
+| Bulk parse batch | 10 minutes (600,000 ms) |
+| AI Architect Pass | 2 minutes (120,000 ms) |
+| Inspector AI actions | 200 seconds (200,000 ms) |
+| All other requests | 30 seconds (30,000 ms) |
+
+---
+
+## 🔒 Security Notes
+
+- **API keys** are stored via VS Code's settings API and are never committed to source files or written to logs.
+- **AI prompts** include only the selected symbol's source code and lightweight metadata stubs from SQLite. No bulk file dumps are sent to AI providers.
+- **The SQLite index** is stored in the OS workspace storage directory (`~/.vscode/...`) and is not encrypted.
+- **Advisor-only mode** — the extension never writes to, creates, or deletes source files.
+- Review your AI provider's data and privacy policies if working with sensitive code.
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please follow these guidelines:
-
 ### Branch Strategy
+
 ```
 main          ← stable releases
 dev           ← integration branch
@@ -248,81 +438,43 @@ feature/<x>   ← new features (branch from dev)
 fix/<x>       ← bug fixes (branch from dev)
 ```
 
-### Commit Messages (Conventional Commits)
+### Conventional Commit Format
+
 ```
-feat(worker): add Python type annotation extractor
-fix(webview): prevent duplicate click events on graph nodes
-docs(readme): update installation section
-chore(deps): upgrade @xyflow/react to 12.4.0
+feat(worker): add Java Tree-sitter grammar support
+fix(webview): prevent edge flicker on LOD depth change
+perf(indexer): batch edge inserts to reduce SQLite roundtrips
+docs(readme): add Amazon Bedrock setup section
+chore(deps): upgrade @xyflow/react to 12.x
 ```
 
 ### Pull Request Checklist
-- [ ] `npm run build` succeeds with zero TypeScript errors
-- [ ] Tested in Extension Development Host (F5)
-- [ ] No native module dependencies introduced
-- [ ] Worker boundary respected (no direct DB calls from extension host)
 
-### Reporting Issues
+- [ ] `npm run build` completes with zero TypeScript errors
+- [ ] Tested in Extension Development Host (`F5` in VS Code)
+- [ ] No native module dependencies added (WASM only)
+- [ ] Worker boundary respected — no direct DB or AI calls from Extension Host
+- [ ] New IPC message types added to `message-protocol.ts` union types
+- [ ] Output channel logging added for new features
+
+### Reporting Bugs
 
 Please include:
-- VS Code version, OS, Node version
-- Extension version (`0.x.x`)
+- VS Code version + OS + Node.js version
+- Extension version (`0.1.0`)
 - Steps to reproduce
-- Output panel logs (`View → Output → Sentinel Flow`)
-
----
-
-## 📚 API Documentation
-
-### Worker Message Protocol
-
-The extension host communicates with the background worker via typed messages defined in `src/worker/message-protocol.ts`.
-
-**Key request types:**
-| Message Type | Description |
-|---|---|
-| `parse-batch` | Parse and index a batch of files |
-| `query-symbols` | Search symbols by name |
-| `export-graph` | Get full graph as JSON |
-| `ai-query` | Send AI query with optional symbol context |
-| `inspector-ai-action` | Trigger AI action (explain/audit/refactor/optimize) |
-| `trace-function` | Get BFS call trace for a symbol |
-| `get-architecture-skeleton` | Get file-level architecture graph |
-
-### Graph Export Format
-
-```typescript
-interface GraphExport {
-  symbols: Symbol[];   // All indexed symbols
-  edges: Edge[];       // Call and import edges
-  files: string[];     // All indexed file paths
-  domains: Domain[];   // Grouped file domains
-}
-```
-
----
-
-## 🔒 Security Notes
-
-- AI API keys are stored in VS Code's secure settings store — never in source files.
-- AI prompts include your local source code (only the selected symbol + lightweight metadata stubs for neighbors). Review your AI provider's data policies.
-- The SQLite index is stored in your OS temp directory and is not encrypted.
+- Output panel logs (**View → Output → Sentinel Flow**)
+- Contents of `dist/worker/` if WASM-related
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **MIT License** — see the [LICENSE](./LICENSE) file for details.
-
----
-
-## 👤 Author
-
-**Innovators of AI**  
-Publisher ID: `innovators-of-ai`
+MIT License — see [LICENSE](./LICENSE) for details.
 
 ---
 
 <div align="center">
-  <sub>Built with ❤️ using Tree-sitter, sql.js, ReactFlow, and the VS Code Extension API.</sub>
+  <sub>Built with Tree-sitter, sql.js, ReactFlow, Groq, Gemini, and the VS Code Extension API.</sub><br/>
+  <sub>Publisher: <b>innovators-of-ai</b> · Extension ID: <code>innovators-of-ai.sentinel-flow-extension</code></sub>
 </div>

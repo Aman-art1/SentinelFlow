@@ -101,31 +101,62 @@ export class FileWatcherManager {
         this.outputChannel.appendLine(`FileWatcher: Processing batch of ${filesToProcess.length} files...`);
 
         try {
-            const validFilesMetadata = await Promise.all(
+            // ── Pass 1: Read only hashes — no heavy content in RAM yet ──
+            const hashMetadata = await Promise.all(
                 filesToProcess.map(async (filePath) => {
                     try {
                         if (!fs.existsSync(filePath)) return null;
-                        const content = await fs.promises.readFile(filePath, 'utf8');
                         const language = this.getLanguage(filePath);
                         if (!language) return null;
-                        return { filePath, content, language };
-                    } catch (e) {
+                        const content = await fs.promises.readFile(filePath, 'utf8');
+                        const contentHash = FileWatcherManager.computeHash(content);
+                        // Drop the heavy string — only keep the hash for IPC
+                        return { filePath, language, contentHash };
+                    } catch {
                         return null;
                     }
                 })
             );
 
-            const filesToParse = validFilesMetadata.filter((f): f is NonNullable<typeof f> => f !== null);
+            const validHashes = hashMetadata.filter((f): f is NonNullable<typeof f> => f !== null);
+            if (validHashes.length === 0) return;
+
+            // ── Pass 2: Ask worker which files actually changed ──
+            const pathsNeedingReindex = await this.workerManager.checkFileHashBatch(
+                validHashes.map(f => ({ filePath: f.filePath, contentHash: f.contentHash }))
+            );
+
+            if (pathsNeedingReindex.length === 0) {
+                this.outputChannel.appendLine('FileWatcher: No files changed (hash match). Skipping re-parse.');
+                return;
+            }
+
+            const reindexSet = new Set(pathsNeedingReindex);
+
+            // ── Pass 3: Read content ONLY for changed files ──
+            const filesToParse = (
+                await Promise.all(
+                    validHashes
+                        .filter(f => reindexSet.has(f.filePath))
+                        .map(async (f) => {
+                            try {
+                                const content = await fs.promises.readFile(f.filePath, 'utf8');
+                                return { filePath: f.filePath, language: f.language, content };
+                            } catch {
+                                return null;
+                            }
+                        })
+                )
+            ).filter((f): f is NonNullable<typeof f> => f !== null);
+
             if (filesToParse.length === 0) return;
 
-            // Use batch parsing for better cross-file edge resolution and fewer round-trips
             const result = await this.workerManager.parseBatch(filesToParse);
 
             this.outputChannel.appendLine(
-                `Batch indexed ${result.filesProcessed} files: ${result.totalSymbols} symbols, ${result.totalEdges} edges`
+                `Batch indexed ${result.filesProcessed} changed files: ${result.totalSymbols} symbols, ${result.totalEdges} edges`
             );
 
-            // Invalidate inspector cache since data has changed
             vscode.commands.executeCommand('sentinel-flow.invalidate-cache');
         } catch (error) {
             this.outputChannel.appendLine(`Batch re-indexing failed: ${error}`);

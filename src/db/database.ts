@@ -8,7 +8,7 @@ import { computeDomainHealth, type DomainHealth } from '../domain/health';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
-
+import { PendingCall, PendingImport } from './composite-index';
 export interface GraphExport {
     symbols: {
         id: number;
@@ -151,7 +151,7 @@ export class CodeIndexDatabase {
         let db: SqlJsDatabase;
         if (fs.existsSync(dbPath)) {
             const fileBuffer = fs.readFileSync(dbPath);
-            db = new SQL.Database(fileBuffer);
+            db = new SQL.Database(fileBuffer as unknown as Uint8Array);
         } else {
             db = new SQL.Database();
         }
@@ -916,6 +916,7 @@ export class CodeIndexDatabase {
             domain: r.domain,
             healthScore: r.health_score,
             complexity: r.complexity,
+            coupling: r.coupling,
             symbolCount: r.symbol_count,
             lastUpdated: r.last_updated,
         }));
@@ -1464,6 +1465,33 @@ export class CodeIndexDatabase {
      */
     getOutgoingEdges(symbolId: number): Edge[] {
         return queryAll(this.db, 'SELECT * FROM edges WHERE source_id = ?', [symbolId]).map(this.mapRowToEdge);
+    }
+
+    /**
+     * Get outgoing edges for multiple symbols
+     */
+    getOutgoingEdgesBatch(symbolIds: number[]): Edge[] {
+        if (symbolIds.length === 0) return [];
+        const placeholders = symbolIds.map(() => '?').join(',');
+        return queryAll(this.db, `SELECT * FROM edges WHERE source_id IN (${placeholders})`, symbolIds).map(this.mapRowToEdge);
+    }
+
+    /**
+     * Get incoming edges for multiple symbols
+     */
+    getIncomingEdgesBatch(symbolIds: number[]): Edge[] {
+        if (symbolIds.length === 0) return [];
+        const placeholders = symbolIds.map(() => '?').join(',');
+        return queryAll(this.db, `SELECT * FROM edges WHERE target_id IN (${placeholders})`, symbolIds).map(this.mapRowToEdge);
+    }
+
+    /**
+     * Get symbols by an array of IDs
+     */
+    getSymbolsByIds(symbolIds: number[]): Symbol[] {
+        if (symbolIds.length === 0) return [];
+        const placeholders = symbolIds.map(() => '?').join(',');
+        return queryAll(this.db, `SELECT * FROM symbols WHERE id IN (${placeholders})`, symbolIds).map(this.mapRowToSymbol);
     }
 
     /**

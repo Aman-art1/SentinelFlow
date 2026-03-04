@@ -95,7 +95,8 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!hasIndexedWorkspace) {
             outputChannel.appendLine('First time activation in this workspace detected.');
             // Give VS Code a moment to finish initializing
-            setTimeout(() => {
+            const autoIndexTimer = setTimeout(() => {
+                if (!workerManager) return; // Guard
                 const autoIndexEnabled = context.workspaceState.get<boolean>('autoIndexEnabled', true);
                 if (autoIndexEnabled) {
                     outputChannel.appendLine('Starting auto-index...');
@@ -106,7 +107,8 @@ export async function activate(context: vscode.ExtensionContext) {
                     outputChannel.appendLine('Auto-indexing is disabled, skipping initial index.');
                     context.workspaceState.update('hasIndexedWorkspace', true);
                 }
-            }, 7000);
+            }, 5000);
+            context.subscriptions.push({ dispose: () => clearTimeout(autoIndexTimer) });
         }
 
         // Listen for workspace folder changes
@@ -286,38 +288,63 @@ async function indexWorkspace() {
                         increment: (chunk.length / totalFiles) * 100
                     });
 
-                    // Step 1: Read chunk metadata in parallel
-                    const chunkMetadata = await Promise.all(
+                    // ── Pass 1: Read ONLY hashes (no content in RAM) ──────────────────
+                    // We hash each file cheaply without holding the full string in memory.
+                    // For a 15 000-file monorepo this keeps the RSS flat instead of
+                    // spiking by gigabytes while we wait for the IPC round-trip.
+                    const chunkHashes = await Promise.all(
                         chunk.map(async (file) => {
                             try {
                                 if (!fs.existsSync(file.fsPath)) return null;
-                                const content = await fs.promises.readFile(file.fsPath, 'utf8');
                                 const language = getLanguage(file.fsPath);
                                 if (!language) return null;
+                                const content = await fs.promises.readFile(file.fsPath, 'utf8');
                                 const contentHash = crypto.createHash('sha256').update(content).digest('hex');
-                                return { filePath: file.fsPath, content, language, contentHash };
-                            } catch (e) {
+                                // Drop the content string immediately — only keep the hash.
+                                return { filePath: file.fsPath, language, contentHash };
+                            } catch {
                                 return null;
                             }
                         })
                     );
 
-                    const validFiles = chunkMetadata.filter((f): f is NonNullable<typeof f> => f !== null);
-                    if (validFiles.length === 0) {
+                    const validHashes = chunkHashes.filter((f): f is NonNullable<typeof f> => f !== null);
+                    if (validHashes.length === 0) {
                         processedCount += chunk.length;
                         continue;
                     }
 
-                    // Step 2: Batch check which files in THIS chunk need re-indexing
+                    // ── Pass 2: Ask the worker which files actually changed ────────────
                     const pathsNeedingReindex = await workerManager!.checkFileHashBatch(
-                        validFiles.map(f => ({ filePath: f.filePath, contentHash: f.contentHash }))
+                        validHashes.map(f => ({ filePath: f.filePath, contentHash: f.contentHash }))
                     );
 
-                    const reindexMap = new Set(pathsNeedingReindex);
-                    const filesToParse = validFiles.filter(f => reindexMap.has(f.filePath));
+                    const reindexSet = new Set(pathsNeedingReindex);
+
+                    if (reindexSet.size === 0) {
+                        processedCount += chunk.length;
+                        continue;
+                    }
+
+                    // ── Pass 3: Read ONLY the changed files' content ──────────────────
+                    // This is the expensive I/O — but now it only runs for the small
+                    // subset of files that genuinely changed (often 1–5% of the chunk).
+                    const filesToParse = (
+                        await Promise.all(
+                            validHashes
+                                .filter(f => reindexSet.has(f.filePath))
+                                .map(async (f) => {
+                                    try {
+                                        const content = await fs.promises.readFile(f.filePath, 'utf8');
+                                        return { filePath: f.filePath, language: f.language, content };
+                                    } catch {
+                                        return null;
+                                    }
+                                })
+                        )
+                    ).filter((f): f is NonNullable<typeof f> => f !== null);
 
                     if (filesToParse.length > 0) {
-                        // Step 3: Parse this chunk's mutated files
                         const result = await workerManager!.parseBatch(filesToParse);
                         totalSymbols += result.totalSymbols;
                         totalEdges += result.totalEdges;

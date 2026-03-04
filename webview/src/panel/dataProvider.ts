@@ -35,7 +35,8 @@ export interface BatchData {
 class InspectorDataProvider {
     private vscode: VSCodeAPI;
     private pendingRequests = new Map<string, PendingRequest<unknown>>();
-    private cache = new Map<string, CacheEntry<unknown>>();
+    private dataCache = new Map<string, CacheEntry<unknown>>();
+    private aiCache = new Map<string, CacheEntry<unknown>>();
 
     // 5 minutes — index data is stable between re-index runs.
     // Invalidated explicitly when the user triggers a re-index.
@@ -84,17 +85,19 @@ class InspectorDataProvider {
         return `${type}:${id}`;
     }
 
-    private getFromCache<T>(key: string): T | null {
-        const cached = this.cache.get(key);
+    private getFromCache<T>(key: string, isAI: boolean = false): T | null {
+        const cache = isAI ? this.aiCache : this.dataCache;
+        const cached = cache.get(key);
         if (cached && Date.now() - cached.timestamp < this.cacheTTL) {
             return cached.data as T;
         }
-        if (cached) this.cache.delete(key); // evict expired
+        if (cached) cache.delete(key); // evict expired
         return null;
     }
 
-    private setCache<T>(key: string, data: T): void {
-        this.cache.set(key, { data, timestamp: Date.now() });
+    private setCache<T>(key: string, data: T, isAI: boolean = false): void {
+        const cache = isAI ? this.aiCache : this.dataCache;
+        cache.set(key, { data, timestamp: Date.now() });
     }
 
     /**
@@ -233,7 +236,7 @@ class InspectorDataProvider {
         action: 'explain' | 'audit' | 'refactor' | 'optimize'
     ): Promise<AIResult> {
         const cacheKey = this.getCacheKey(`ai-${action}`, id);
-        const cached = this.getFromCache<AIResult>(cacheKey);
+        const cached = this.getFromCache<AIResult>(cacheKey, true);
         if (cached) {
             return { ...cached, cached: true };
         }
@@ -244,7 +247,7 @@ class InspectorDataProvider {
             200_000 // 200s — Gemini can take 120-173s for complex symbols
         );
 
-        this.setCache(cacheKey, result);
+        this.setCache(cacheKey, result, true);
         return result;
     }
 
@@ -287,20 +290,15 @@ class InspectorDataProvider {
      * AI results are preserved since they depend on code structure, not index state.
      */
     invalidateCache(): void {
-        const AI_PREFIX_RE = /^ai-/;
-        for (const key of this.cache.keys()) {
-            const type = key.split(':')[0];
-            if (!AI_PREFIX_RE.test(type)) {
-                this.cache.delete(key);
-            }
-        }
+        this.dataCache.clear();
     }
 
     /**
      * Clear the entire cache including AI results
      */
     clearCache(): void {
-        this.cache.clear();
+        this.dataCache.clear();
+        this.aiCache.clear();
     }
 
     /** Get pending request count (for debugging) */

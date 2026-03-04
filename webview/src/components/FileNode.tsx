@@ -79,7 +79,6 @@ const FileNode = memo(({ data, style }: NodeProps<Node<FileNodeData>> & { style?
                 padding: '0 20px', // Extra padding for curved edges
                 color: 'var(--vscode-editor-foreground)',
             }}
-            title={`File: ${filePath}\nSymbols: ${symbolCount}\nCoupling: ${(avgCoupling * 100).toFixed(0)}%`}
         >
             <Handle type="target" position={Position.Top} className="w-1 h-1 !bg-gray-400" />
 

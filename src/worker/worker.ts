@@ -5,7 +5,7 @@
 import { parentPort } from 'worker_threads';
 import { CodeIndexDatabase } from '../db/database';
 import { TreeSitterParser } from './parser';
-import { SymbolExtractor, ImportInfo, CallInfo } from './symbol-extractor';
+import { SymbolExtractor } from './symbol-extractor';
 import {
     WorkerRequest,
     WorkerResponse,
@@ -30,6 +30,9 @@ class IndexWorker {
 
     // Global symbol map for cross-file resolution
     private globalSymbolMap: Map<string, number> = new Map();
+
+    // O(1) path index for import resolution (replaces O(N) globalSymbolMap scan)
+    private globalPathIndex: Map<string, string> = new Map();
 
     constructor() {
         this.parser = new TreeSitterParser();
@@ -83,11 +86,13 @@ class IndexWorker {
         }
     }
 
+    private memoryMonitorInterval: NodeJS.Timeout | null = null;
+
     /**
      * Start periodic memory monitoring
      */
     private startMemoryMonitor(): void {
-        setInterval(() => {
+        this.memoryMonitorInterval = setInterval(() => {
             this.checkMemoryUsage();
         }, 5000); // Check every 5 seconds
     }
@@ -375,6 +380,9 @@ class IndexWorker {
             // Keep globalSymbolMap in sync for any legacy code still reading it
             const key = `${sym.filePath}:${sym.name}:${sym.rangeStartLine - 1}`;
             this.globalSymbolMap.set(key, dbId);
+            // Populate global path index for O(1) import resolution
+            const keyPath = sym.filePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+            this.globalPathIndex.set(keyPath, sym.filePath);
         }
 
         // ── Fix up provisional caller IDs ─────────────────────────────────
@@ -400,13 +408,11 @@ class IndexWorker {
                         break;
                     }
                 }
-                // Also check globalSymbolMap keys for cross-file paths from other parse sessions
+                // Also check globalPathIndex for cross-file paths from other parse sessions
                 if (registry.resolve(imp.sourcePathId) === moduleStr) {
-                    for (const key of this.globalSymbolMap.keys()) {
-                        const keyPath = key.substring(0, key.indexOf(':'));
-                        if (keyPath.replace(/\.(ts|tsx|js|jsx)$/, '').endsWith(normalized)) {
-                            imp.sourcePathId = registry.intern(keyPath);
-                            // Rebuild index entry for this path if not already present
+                    for (const [keyPath, fullPath] of this.globalPathIndex.entries()) {
+                        if (keyPath.endsWith(normalized)) {
+                            imp.sourcePathId = registry.intern(fullPath);
                             break;
                         }
                     }
@@ -516,6 +522,8 @@ class IndexWorker {
                 // Keep globalSymbolMap in sync for cross-session single-file parses
                 const key = `${sym.filePath}:${sym.name}:${sym.rangeStartLine - 1}`;
                 this.globalSymbolMap.set(key, dbId);
+                const keyPath = sym.filePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+                this.globalPathIndex.set(keyPath, sym.filePath);
             }
             symbolBufferStartIdx += symbolBuffer.length;
             totalSymbols += symbolBuffer.length;
@@ -772,8 +780,8 @@ class IndexWorker {
 
         this.db.clearIndex();
         this.globalSymbolMap.clear();
-        this.allImports = [];
-        this.allCalls = [];
+        this.globalPathIndex.clear();
+
 
         this.sendMessage({
             type: 'clear-complete',
@@ -807,6 +815,10 @@ class IndexWorker {
      * Shutdown worker
      */
     private handleShutdown(): void {
+        if (this.memoryMonitorInterval) {
+            clearInterval(this.memoryMonitorInterval);
+            this.memoryMonitorInterval = null;
+        }
         if (this.db) {
             this.db.close();
         }
@@ -977,13 +989,7 @@ class IndexWorker {
         }
     }
 
-    private getLanguage(filePath: string): 'typescript' | 'python' | 'c' | null {
-        const ext = path.extname(filePath).toLowerCase();
-        if (ext === '.ts' || ext === '.tsx') return 'typescript';
-        if (ext === '.py') return 'python';
-        if (ext === '.c' || ext === '.h') return 'c';
-        return null;
-    }
+
 
     /**
      * Send message to parent thread

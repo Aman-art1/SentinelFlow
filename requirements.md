@@ -1,345 +1,462 @@
-# Requirements Document: SentinelFlow
+# Requirements Document — Sentinel Flow (v0.1.0)
 
-## Introduction
+## 1. Overview
 
-SentinelFlow is a VS Code extension that provides system flow visualization and architectural insight. The extension is an advisor-only tool that explains architectural risk without modifying code. It uses Tree-sitter for parsing, in-memory graph models for analysis, and React Flow for interactive visualization. SentinelFlow follows a zero-noise philosophy with no forced warnings or colored squiggles.
+**Sentinel Flow** is a production VS Code extension (`innovators-of-ai.sentinel-flow-extension`) that provides **codebase intelligence and visualization** for TypeScript/Python/C projects. It follows a strict **advisor-only, zero-noise philosophy**: the extension never modifies source code automatically, never displays unsolicited warnings, and never blocks the VS Code UI thread.
 
-Phase 1 focuses on the System Flow Extractor: scanning directories, extracting symbols and relationships, calculating basic metrics, and visualizing the codebase as an interactive graph.
+The system is architected around three runtime boundaries:
 
-## Glossary
+| Boundary | Process | Responsibility |
+|---|---|---|
+| **Extension Host** | VS Code main thread | Command dispatch, UI events, CodeLens, file watching |
+| **Worker Thread** | Node.js `worker_threads` | Parsing, DB writes, AI orchestration, metric computation |
+| **Webview SPA** | Chrome renderer | Interactive graph, Inspector Panel, ViewMode bar |
 
-- **Extension_Host**: The main VS Code extension process responsible for orchestration and UI integration
-- **Worker_Process**: Background thread handling scanning, parsing, and metric computation without blocking the Extension Host
-- **System_Flow_Extractor**: Component that scans directories, parses files, extracts symbols, and builds relationship graphs
-- **Webview**: React-based renderer process providing interactive visualization
-- **Symbol**: A code entity such as a function, class, variable, or interface
-- **Graph**: Visual representation of code structure showing relationships between entities
-- **Fan_In**: Number of incoming calls or dependencies to a code entity
-- **Fan_Out**: Number of outgoing calls or dependencies from a code entity
-- **Tree_Sitter**: Parsing library used for extracting code structure
-- **Semantic_Zoom**: Hierarchical aggregation allowing users to view code at different levels of detail
-- **Coupling_Heat**: Visual indicator of coupling intensity based on Fan-In and Fan-Out
-- **CodeLens**: In-editor UI element displaying contextual information above code
-- **Cyclomatic_Complexity**: Metric measuring the number of independent paths through code
-- **Visualization_Mode**: Display mode determining which nodes and relationships are shown (Architecture, Flow, Trace, Full)
-- **SQLite_Database**: Local database storing indexed code data for persistence across sessions
-- **AI_Service**: External AI provider (Vertex AI, Gemini, or Groq) for code analysis
-- **Domain**: A high-level architectural grouping of related files and components
-- **Blast_Radius**: Measure of potential impact when modifying a code entity
-- **Risk_Score**: Calculated metric indicating code fragility based on complexity, coupling, and AI assessment
-- **Technical_Debt**: Detected code smells, anti-patterns, and maintainability issues
+---
 
-## Requirements
+## 2. Glossary
 
-### Requirement 1: Directory and File Scanning
+| Term | Definition |
+|---|---|
+| `Extension_Host` | VS Code main extension process; never performs CPU-heavy operations |
+| `Worker_Thread` | Isolated Node.js worker spawned on activation; hosts all indexing and AI logic |
+| `WorkerManager` | Host-side proxy managing worker lifecycle, request queuing, and IPC timeouts |
+| `IndexWorker` | Worker-side class that owns the DB, parser, extractor, AI orchestrator, and Inspector |
+| `CodeIndexDatabase` | sql.js WASM SQLite wrapper; holds symbols, edges, file hashes, AI cache, debt, domains |
+| `TreeSitterParser` | web-tree-sitter WASM parser bootstrapped with grammar WASMs per language |
+| `SymbolExtractor` | AST visitor that extracts symbols and defers edge resolution via `PendingCall`/`PendingImport` |
+| `StringRegistry` | Integer-interned string store; eliminates duplicate allocations in batch parse runs |
+| `CompositeIndex` | O(1) inverted index keyed on (nameId × pathId × line); used for call/import edge resolution |
+| `AIOrchestrator` | Dual-path AI router: Groq reflex path (<300 ms) and Gemini/Bedrock strategic path |
+| `InspectorService` | Business logic layer for the Inspector Panel: overview, deps, risks, and AI actions |
+| `ImpactAnalyzer` | BFS/DFS engine computing blast radius and transitive callers for a symbol |
+| `FileWatcherManager` | VS Code file-system watcher with 1-second debounce batch for incremental re-indexing |
+| `GraphWebviewProvider` | Full-panel webview hosting the React graph SPA |
+| `SidebarProvider` | Activity-bar sidebar webview; exposes AI provider controls and status |
+| `Symbol` | Extracted code entity: function, class, variable, interface, type, arrow-function, method |
+| `Edge` | Directed relationship between symbols: `call`, `import`, `inherit`, `implement` |
+| `Domain` | AI-or-heuristic-classified functional grouping of files (e.g. `auth`, `api`, `ui`) |
+| `ArchitectureSkeleton` | File-level dependency graph used for the Architecture view |
+| `FunctionTrace` | BFS call-path from a selected symbol used for the Trace view |
+| `ViewMode` | Active visualization mode: `architecture`, `codebase`, or `trace` |
+| `Inspector Panel` | Side panel showing Overview, Dependencies, Risks, and AI Actions for a selected node |
+| `Complexity` | Cyclomatic complexity score extracted by the AST visitor on every function/method |
+| `risk_score` | 0–100 score combining complexity, coupling (fan-in), fragility, and AI assessment |
+| `Technical_Debt` | Persisted code-smell items: `long_method`, `god_object`, `feature_envy`, `high_fan_out` |
+| `Blast_Radius` | Transitive set of symbols impacted by a change to a given node |
+| `cAST` | Contextual AST — the AI prompt payload: target symbol source code + dependency stubs |
+| `Reflex_Path` | Fast AI route via Groq/Llama 3.1 (<300 ms) for on-demand Inspector actions |
+| `Strategic_Path` | Deep AI route via Google Gemini 1.5 Pro or Amazon Bedrock (up to 180 s) |
+| `LSP` | Language Server Protocol; optional VS Code-based type resolution for TS/JS |
+| `WASM` | WebAssembly — used by both Tree-sitter parsers and sql.js; enables cross-platform runs |
 
-**User Story:** As a developer, I want the extension to scan my workspace, so that I can visualize the codebase structure.
+---
 
-#### Acceptance Criteria
+## 3. Functional Requirements
 
-1. WHEN a workspace is opened, THE System_Flow_Extractor SHALL scan all supported file types in the workspace
-2. WHEN a file is scanned, THE System_Flow_Extractor SHALL parse it using Tree_Sitter to extract symbols and relationships
-3. THE System_Flow_Extractor SHALL build an in-memory graph model of the codebase
-4. THE Worker_Process SHALL perform all scanning and parsing operations to prevent blocking the Extension_Host
-5. THE Extension_Host SHALL communicate with the Webview using VS Code messaging protocol
+### FR-01 — Extension Activation and Initialization
 
-### Requirement 2: Symbol Extraction
-
-**User Story:** As a developer, I want the extension to identify functions and classes, so that I can understand code structure.
-
-#### Acceptance Criteria
-
-1. WHEN a file is parsed, THE System_Flow_Extractor SHALL extract all functions, classes, variables, and interfaces
-2. WHEN symbols are extracted, THE System_Flow_Extractor SHALL capture their location (file path, start line, end line)
-3. WHEN symbols are extracted, THE System_Flow_Extractor SHALL calculate Cyclomatic_Complexity for each function
-4. THE System_Flow_Extractor SHALL store extracted symbols in an in-memory data structure
-
-### Requirement 3: Relationship Detection
-
-**User Story:** As a developer, I want to see how code entities relate to each other, so that I can understand dependencies.
-
-#### Acceptance Criteria
-
-1. WHEN parsing a file, THE System_Flow_Extractor SHALL detect function calls between symbols
-2. WHEN parsing a file, THE System_Flow_Extractor SHALL detect import relationships between files
-3. THE System_Flow_Extractor SHALL store relationships in an in-memory graph structure
-
-### Requirement 4: Fan-In and Fan-Out Calculation
-
-**User Story:** As a developer, I want to see coupling metrics, so that I can identify highly connected code.
+**User Story:** As a developer, when I open a workspace I want the extension to boot silently and prepare its indexing engine without any prompts.
 
 #### Acceptance Criteria
 
-1. WHEN symbols are extracted, THE System_Flow_Extractor SHALL calculate Fan_In for each symbol
-2. WHEN symbols are extracted, THE System_Flow_Extractor SHALL calculate Fan_Out for each symbol
-3. THE System_Flow_Extractor SHALL make Fan_In and Fan_Out values available for visualization
+1. On `onStartupFinished`, the Extension_Host SHALL spawn the Worker_Thread and wait for the `initialize-complete` handshake with **no arbitrary timeout** — WASM hydration can take >5 seconds on cold start.
+2. The Worker_Thread SHALL initialize in this order: start memory monitor → open SQLite DB → bootstrap TreeSitterParser WASM → construct AIOrchestrator → send `ready` signal.
+3. If the Worker_Thread crashes during initialization, WorkerManager SHALL reject the ready-promise and the Extension_Host SHALL show a single error message with no automatic retry loop.
+4. On first activation in a workspace (`!hasIndexedWorkspace`), the Extension_Host SHALL trigger auto-indexing after a 5-second delay to allow VS Code to finish its own startup.
+5. On subsequent activations, auto-indexing SHALL NOT re-run unless workspace folders changed.
+6. All workspace state flags SHALL be persisted via `context.workspaceState`, not global state.
 
-### Requirement 5: Interactive Graph Visualization
+---
 
-**User Story:** As a developer, I want to visualize my codebase as an interactive graph, so that I can explore code structure visually.
+### FR-02 — File Discovery and Language Detection
 
-#### Acceptance Criteria
-
-1. WHEN the user opens the graph view, THE Webview SHALL render an interactive graph showing Files and Symbols
-2. WHEN the user clicks a node in the graph, THE Webview SHALL highlight the node and display its details
-3. WHEN the user double-clicks a file or symbol node, THE Extension_Host SHALL open the corresponding file in the editor
-4. THE Webview SHALL support zoom, pan, and drag operations for graph navigation
-5. THE Webview SHALL use React Flow for graph rendering
-
-### Requirement 6: Semantic Zoom via Hierarchical Aggregation
-
-**User Story:** As a developer, I want to view code at different levels of detail, so that I can focus on relevant areas.
+**User Story:** As a developer, I want the indexer to automatically discover all supported source files while excluding build artifacts.
 
 #### Acceptance Criteria
 
-1. WHEN the user zooms out, THE Webview SHALL aggregate symbols into file-level nodes
-2. WHEN the user zooms in, THE Webview SHALL expand file-level nodes to show individual symbols
-3. THE Webview SHALL aggregate relationships when displaying higher-level views
-4. THE Webview SHALL provide smooth transitions between zoom levels
+1. The Extension_Host SHALL discover files matching `**/*.{ts,tsx,py,c,h}` using VS Code's `findFiles` API.
+2. The following directories SHALL always be excluded from discovery: `node_modules`, `venv`, `.venv`, `.git`, `dist`, `build`, `out`, `.cache`, `.vscode`, `__pycache__`, `.pytest_cache`.
+3. The Extension_Host SHALL map file extensions to languages: `.ts/.tsx → typescript`, `.py → python`, `.c/.h → c`.
+4. Files with extensions not in the supported set SHALL be silently ignored.
+5. File discovery SHALL complete before any parsing begins; total file count SHALL be reported to the progress notification.
 
-### Requirement 7: Coupling Heat Indicator
+---
 
-**User Story:** As a developer, I want visual indicators of coupling intensity, so that I can identify architectural hotspots.
+### FR-03 — Incremental Indexing with Content-Hash Deduplication
 
-#### Acceptance Criteria
-
-1. WHEN displaying the graph, THE Webview SHALL color-code nodes based on Fan_In and Fan_Out values
-2. WHEN a node has high coupling, THE Webview SHALL display it with a warmer color
-3. WHEN a node has low coupling, THE Webview SHALL display it with a cooler color
-4. THE Webview SHALL provide a legend explaining the coupling heat color scheme
-
-### Requirement 8: CodeLens Integration
-
-**User Story:** As a developer, I want to see code metrics directly in my editor, so that I can identify complex code without switching views.
+**User Story:** As a developer, I want re-indexing to only process files that actually changed so that large workspaces index quickly.
 
 #### Acceptance Criteria
 
-1. WHEN a file is opened in the editor, THE Extension_Host SHALL display CodeLens indicators above each function and class
-2. WHEN displaying CodeLens, THE Extension_Host SHALL show Cyclomatic_Complexity value for each function
-3. WHEN displaying CodeLens, THE Extension_Host SHALL show Fan_In and Fan_Out values for each symbol
-4. WHEN the user clicks a Trace CodeLens action, THE Extension_Host SHALL open the Webview in Trace Mode for that symbol
-5. WHEN Cyclomatic_Complexity exceeds 15, THE Extension_Host SHALL display the CodeLens indicator with warning styling
-6. WHEN Fan_In exceeds 20, THE Extension_Host SHALL display the CodeLens indicator with critical styling
-7. WHEN Fan_Out exceeds 15, THE Extension_Host SHALL display the CodeLens indicator with elevated styling
-8. THE CodeLens SHALL remain strictly read-only with no code modification capabilities
+1. For every file to be indexed, the Extension_Host SHALL compute a SHA-256 hash of the raw file content **before** sending content to the worker.
+2. The Extension_Host SHALL call `check-file-hash-batch` with all hashes in a batch; the Worker_Thread SHALL compare against stored hashes in SQLite and return only paths that changed.
+3. The Extension_Host SHALL only read file content to memory for files identified as changed (Pass 3). Unchanged files SHALL never be loaded into RAM.
+4. Files SHALL be processed in batches of 100 to maintain UI responsiveness during large workspace indexing.
+5. Every 50 files during a bulk batch, the Worker_Thread SHALL flush the SQLite in-memory DB to disk to prevent data loss.
+6. On completion, the Extension_Host SHALL post a `cache-invalidate` message to the Webview so the Inspector Panel cache is cleared.
+7. The progress notification SHALL display `Processing N/M files...` with incremental percentage.
 
-### Requirement 9: Visualization Modes
+---
 
-**User Story:** As a developer, I want different visualization modes, so that I can analyze code at different levels of abstraction.
+### FR-04 — AST Parsing and Symbol Extraction
 
-#### Acceptance Criteria
-
-1. WHEN the user selects Architecture Mode, THE Webview SHALL display only file-level nodes with aggregated relationships
-2. WHEN the user selects Flow Mode for a symbol, THE Webview SHALL display the execution path from that symbol with directional call relationships
-3. WHEN the user selects Trace Mode for a symbol, THE Webview SHALL display both incoming and outgoing relationships showing full Fan_In and Fan_Out context
-4. WHEN the user selects Full Mode, THE Webview SHALL display the complete graph with all file and symbol nodes
-5. WHEN a visualization mode is active, THE Webview SHALL render only nodes and relationships relevant to that mode
-6. THE Webview SHALL hide all unrelated elements when a specific mode is active
-
-### Requirement 10: Advanced Filtering System
-
-**User Story:** As a developer working with large codebases, I want advanced filtering capabilities, so that I can focus on specific areas of interest.
+**User Story:** As a developer, I want the extension to extract a complete symbol graph from my source files including all functions, classes, and their relationships.
 
 #### Acceptance Criteria
 
-1. WHEN the user applies a risk level filter, THE Webview SHALL show only nodes matching the selected risk threshold (Low, Medium, High)
-2. WHEN the user applies a node type filter, THE Webview SHALL show only nodes of the selected type (File, Symbol)
-3. WHEN the user applies a directory scope filter, THE Webview SHALL show only nodes within the selected directory
-4. WHEN the user enters a name search filter, THE Webview SHALL show only nodes matching the search query
-5. WHEN multiple filters are active, THE Webview SHALL apply logical AND semantics (node visible only if it satisfies all filters)
-6. THE Webview SHALL display the count of visible nodes relative to total nodes (e.g., "Showing 42 of 317 nodes")
-7. THE displayed visible node count SHALL exactly match the number of rendered nodes
+1. The Worker_Thread SHALL parse files via `TreeSitterParser` using language-specific WASM grammars bundled with the extension.
+2. `SymbolExtractor` SHALL extract the following node types per language:
 
-### Requirement 11: Custom Editor Provider for .sflow Files
+   | Language | Extracted Types |
+   |---|---|
+   | TypeScript/TSX | `function`, `class`, `variable`, `interface`, `type`, `arrow_function`, `method` |
+   | Python | `function`, `class`, `variable` |
+   | C/H | `function`, `variable` |
 
-**User Story:** As a developer, I want to save and load graph views, so that I can preserve my analysis work.
+3. For every symbol, the extractor SHALL capture: file path, start line, start column, end line, end column, and cyclomatic complexity.
+4. Cyclomatic complexity SHALL be computed by counting control-flow branches (`if`, `else if`, `for`, `while`, `case`, `catch`, `&&`, `||`, `?`) plus a base of 1.
+5. The extractor SHALL emit `PendingCall` and `PendingImport` records using provisional caller IDs (negative local-index-based) that are rebased to global IDs during the batch flush.
+6. Import source paths SHALL be resolved from relative to absolute using `StringRegistry` snapshot + `globalPathIndex` (O(1) lookup via suffix match).
+7. Call edges SHALL be resolved via `CompositeIndex` keyed on (nameId × pathId × line) providing O(1) resolution per call.
+8. `StringRegistry` SHALL intern all symbol names and file paths as sequential integer IDs to eliminate duplicate heap allocations during batch runs.
 
-#### Acceptance Criteria
+---
 
-1. THE Extension_Host SHALL register a custom editor provider for .sflow file extension
-2. WHEN a .sflow file is opened, THE Extension_Host SHALL load the saved graph state
-3. WHEN the user saves a graph view, THE Extension_Host SHALL serialize the graph state to a .sflow file
-4. THE .sflow file SHALL contain graph data in a readable format
+### FR-05 — Persistent SQLite Database
 
-### Requirement 12: Search and Filtering
-
-**User Story:** As a developer working with large codebases, I want to search and filter the graph, so that I can focus on relevant code areas.
-
-#### Acceptance Criteria
-
-1. WHEN the user enters a search query, THE Webview SHALL filter graph nodes matching the query by name
-2. WHEN search results are displayed, THE Webview SHALL highlight matching nodes and dim non-matching nodes
-3. WHEN the user applies a directory filter, THE Webview SHALL show only nodes within the selected directory scope
-4. THE Webview SHALL display the count of visible nodes after filtering
-
-### Requirement 13: Node Selection and Navigation
-
-**User Story:** As a developer, I want to select nodes and navigate to code, so that I can quickly jump to relevant files.
+**User Story:** As a developer, I want my indexed data persisted so I don't have to re-index every time I open VS Code.
 
 #### Acceptance Criteria
 
-1. WHEN the user clicks a node, THE Webview SHALL select the node and display its properties
-2. WHEN the user double-clicks a file node, THE Extension_Host SHALL open the file in the editor
-3. WHEN the user double-clicks a symbol node, THE Extension_Host SHALL open the file and navigate to the symbol location
-4. THE Webview SHALL maintain selection state during graph interactions
+1. The Worker_Thread SHALL create the SQLite database at `<workspaceStorageUri>/index.db` using `sql.js` (WebAssembly SQLite — no native modules).
+2. The database SHALL contain the following tables:
 
-### Requirement 14: Worker Process Management
+   | Table | Purpose |
+   |---|---|
+   | `symbols` | All extracted symbols with type, location, complexity, domain, AI fields |
+   | `edges` | Call, import, inherit, implement relationships between symbols |
+   | `files` | File tracking: path, content hash, last indexed timestamp |
+   | `meta` | Key-value store for workspace metadata and last index time |
+   | `ai_cache` | SHA-256 keyed AI response cache to avoid redundant API calls |
+   | `domain_metadata` | Per-domain health score, complexity, coupling, symbol count |
+   | `domain_cache` | Per-symbol AI domain classification with confidence score |
+   | `technical_debt` | Detected code smells per symbol: type, severity, description |
 
-**User Story:** As a user of the extension, I want stable performance during scanning, so that my editor remains responsive.
+3. The `symbols` table SHALL include AI-enrichment columns: `domain`, `purpose`, `impact_depth`, `search_tags`, `fragility`, `risk_score`, `risk_reason`.
+4. The `edges` table SHALL cascade-delete children when a symbol is deleted (`ON DELETE CASCADE`).
+5. The Worker_Thread SHALL call `ANALYZE` and `VACUUM` after every bulk indexing operation.
+6. The Worker_Thread SHALL flush the in-memory sql.js DB to disk on every `saveToDisk()` call.
+7. The Extension_Host SHALL provide a `Clear Index` command that wipes all tables and resets in-memory maps.
 
-#### Acceptance Criteria
+---
 
-1. THE Extension_Host SHALL spawn the Worker_Process in a separate thread on activation
-2. THE Worker_Process SHALL perform all directory scanning, parsing, symbol extraction, and metric calculation
-3. THE Extension_Host SHALL communicate with the Worker_Process using message passing
-4. WHEN the Worker_Process is busy, THE Extension_Host SHALL queue incoming requests
-5. THE Worker_Process SHALL maintain all graph data in memory with no database persistence
-6. WHEN the Worker_Process memory usage exceeds 512MB, THE Extension_Host SHALL restart the Worker_Process and resume operations
-7. WHEN the Worker_Process crashes, THE Extension_Host SHALL restart it automatically and resume operations
-8. THE Extension_Host SHALL display Worker_Process status in the VS Code status bar
+### FR-06 — Memory Management and Worker Auto-Restart
 
-### Requirement 15: SQLite Persistent Database
-
-**User Story:** As a developer, I want my indexed data persisted efficiently, so that I don't need to re-index on every workspace open.
-
-#### Acceptance Criteria
-
-1. THE Worker_Process SHALL create a SQLite_Database file in the workspace .vscode directory
-2. WHEN the workspace is opened, THE Worker_Process SHALL load existing index data from the SQLite_Database
-3. WHEN index data is stale, THE Worker_Process SHALL perform incremental re-indexing of changed files only
-4. THE Worker_Process SHALL use Drizzle ORM for all database operations
-5. WHEN the database schema changes, THE Worker_Process SHALL migrate existing data to the new schema
-6. THE Extension_Host SHALL provide a command to clear and rebuild the entire index
-7. THE SQLite_Database SHALL store symbols, relationships, metrics, and risk scores
-
-### Requirement 16: AI Integration Layer
-
-**User Story:** As a developer, I want AI-powered insights, so that I can understand and improve my code more effectively.
+**User Story:** As a developer working with large monorepos, I need the extension to manage memory safely without crashing VS Code.
 
 #### Acceptance Criteria
 
-1. THE Extension_Host SHALL support configuration of Vertex AI Project ID, Gemini API Key, and Groq API Key
-2. THE Extension_Host SHALL store API keys securely using VS Code's secret storage API
-3. WHEN API keys are provided, THE Extension_Host SHALL validate them before storing
-4. THE AI_Service SHALL provide fallback logic between providers (Groq → Vertex → Gemini)
-5. WHEN AI_Service requests fail, THE Extension_Host SHALL retry up to 3 times with exponential backoff
-6. WHEN AI_Service requests fail after retries, THE Extension_Host SHALL display user-friendly error messages
-7. ALL AI features SHALL be user-triggered with no automatic code modifications
-8. THE Extension_Host SHALL maintain the zero-noise philosophy with AI features available on-demand only
+1. The Worker_Thread SHALL monitor heap usage every 5 seconds.
+2. WHEN heap exceeds 1000 MB, the Worker_Thread SHALL send an `error` message to the host and exit with code 137 (OOM).
+3. The WorkerManager SHALL detect non-zero exit codes and automatically spawn a replacement worker.
+4. WHEN the worker restarts, the WorkerManager SHALL create a fresh ready-promise, re-send `initialize`, and re-apply the AI configuration via `updateWorkerConfig`.
+5. The Extension_Host SHALL notify the user with a warning message: "Sentinel Flow Indexer restarted due to high memory usage."
+6. Requests that arrived before the new worker is ready SHALL be queued in `preReadyQueue` and drained once `initialize-complete` is received.
+7. The `parse-batch` timeout SHALL be 600,000 ms (10 minutes) to support large initial indexing runs.
+8. AI action timeouts: `inspector-ai-action` and `inspector-ai-why` SHALL use a 200,000 ms timeout; all other requests use 30,000 ms.
 
-### Requirement 17: Risk Scoring and Detection
+---
 
-**User Story:** As a technical lead, I want to identify risky code areas, so that I can prioritize refactoring and code review efforts.
+### FR-07 — Incremental File Watcher
 
-#### Acceptance Criteria
-
-1. WHEN indexing is complete, THE System_Flow_Extractor SHALL calculate risk scores for all symbols based on complexity, coupling, and AI assessment
-2. WHEN a function has Cyclomatic_Complexity greater than 15, THE System_Flow_Extractor SHALL flag it as high complexity risk
-3. WHEN a function has Fan_In greater than 20, THE System_Flow_Extractor SHALL flag it as high coupling risk
-4. WHEN the AI_Service identifies fragile code patterns, THE System_Flow_Extractor SHALL flag the symbol as fragile
-5. THE Webview SHALL display risk indicators on graph nodes using color coding
-6. WHEN the user filters by risk level, THE Webview SHALL show only nodes matching the selected risk threshold
-7. THE SQLite_Database SHALL persist risk scores for all symbols
-
-### Requirement 18: Blast Radius Analysis
-
-**User Story:** As a developer planning changes, I want to understand the impact of modifying code, so that I can assess change risk before implementation.
+**User Story:** As a developer, I want the extension to automatically re-index files when I save them so my graph stays up-to-date without manual intervention.
 
 #### Acceptance Criteria
 
-1. WHEN the user selects a symbol for blast radius analysis, THE System_Flow_Extractor SHALL calculate all directly and indirectly dependent symbols
-2. WHEN displaying blast radius, THE Webview SHALL show affected symbols with distance metrics from the origin
-3. WHEN calculating blast radius, THE System_Flow_Extractor SHALL include both static dependencies and runtime call relationships
-4. THE Webview SHALL display blast radius size as a numeric score and visual indicator
-5. THE Webview SHALL highlight the blast radius path in the graph visualization
+1. `FileWatcherManager` SHALL use VS Code's `createFileSystemWatcher` to monitor `**/*.{ts,tsx,py,c,h}`.
+2. File change and create events SHALL be debounced with a 1-second batch window before processing.
+3. The file watcher SHALL use the same 3-pass hash-dedup pipeline as the full indexer (hash → check-batch → read-only-changed → parse-batch).
+4. File delete events SHALL immediately trigger `delete-file-symbols` to remove stale data.
+5. The file watcher SHALL exclude: `node_modules`, `.git`, `venv`, `.venv`, `dist`, `build`, `out`, `.vscode`, `__pycache__`, `.cache`, `.pytest_cache`, `.next`, `.svelte-kit`.
+6. After successful re-indexing, the watcher SHALL execute `sentinel-flow.invalidate-cache` to refresh the Webview's Inspector cache.
+7. The user MAY toggle the file watcher on/off via the `Toggle File Watcher` command.
 
-### Requirement 19: Technical Debt Detection
+---
 
-**User Story:** As a technical lead, I want to identify code smells and technical debt, so that I can maintain code quality over time.
+### FR-08 — Graph Visualization — Three View Modes
 
-#### Acceptance Criteria
-
-1. WHEN the user requests technical debt analysis, THE AI_Service SHALL analyze code for common code smells and anti-patterns
-2. WHEN technical debt is detected, THE System_Flow_Extractor SHALL store debt items with severity and location in the SQLite_Database
-3. THE Webview SHALL display technical debt indicators on affected nodes in the graph
-4. WHEN the user clicks a debt indicator, THE Webview SHALL show detailed explanation and suggested remediation
-5. THE Extension_Host SHALL provide a technical debt summary view showing all detected issues grouped by severity
-6. TECHNICAL debt detection SHALL be user-triggered with no automatic analysis
-
-### Requirement 20: AI-Powered Refactoring Suggestions
-
-**User Story:** As a developer maintaining legacy code, I want AI-suggested refactorings, so that I can improve code quality with confidence.
+**User Story:** As a developer, I want to visualize my codebase at different levels of abstraction using an interactive graph panel.
 
 #### Acceptance Criteria
 
-1. WHEN the user requests refactoring suggestions for a symbol, THE AI_Service SHALL analyze the code and propose improvements
-2. WHEN generating refactoring suggestions, THE AI_Service SHALL provide before/after code diffs
-3. THE Webview SHALL display refactoring suggestions with explanations of benefits and potential risks
-4. WHEN the user accepts a refactoring suggestion, THE Extension_Host SHALL apply the changes to the source file
-5. THE Extension_Host SHALL create an undo point before applying AI-suggested refactorings
-6. REFACTORING suggestions SHALL require explicit user approval before any code modification
-7. THE Extension_Host SHALL maintain the advisor-only philosophy by never automatically applying refactorings
+1. The Webview SHALL support three visualization modes selectable via the `ViewModeBar`:
 
-### Requirement 21: AI-Powered Performance Optimization
+   | Mode | Data Source | Layout Engine | Use Case |
+   |---|---|---|---|
+   | `architecture` | `ArchitectureSkeleton` (file/folder nodes) | ELK hierarchical | High-level file-to-file dependencies |
+   | `codebase` | `GraphData` (domains → files → symbols) | ELK layered/radial | Domain-clustered symbol graph |
+   | `trace` | `FunctionTrace` (BFS call paths) | BFS layout | Call-path tracing from a selected symbol |
 
-**User Story:** As a developer optimizing performance, I want AI to identify bottlenecks, so that I can focus optimization efforts effectively.
+2. In **architecture** mode, the Webview SHALL display folder nodes and file nodes with directional import edges.
+3. In **codebase** mode, the Webview SHALL group symbols by domain and support a 3-tier LOD system:
+   - Depth 0: Domain nodes only
+   - Depth 1: Domain + File nodes (default)
+   - Depth 2: Domain + File + Symbol nodes
+4. In **trace** mode, the Webview SHALL render a BFS call path starting from the selected symbol, showing directional call relationships.
+5. Each view mode MAY have individually collapsed domain/file nodes, independent of the global LOD depth setting.
+6. Nodes below the active LOD depth SHALL never be instantiated in the React tree (zero memory, zero layout cost).
 
-#### Acceptance Criteria
+---
 
-1. WHEN the user requests performance analysis for a symbol, THE AI_Service SHALL identify potential performance bottlenecks
-2. WHEN analyzing performance, THE AI_Service SHALL consider algorithmic complexity, memory usage, and I/O patterns
-3. THE Webview SHALL display optimization suggestions with estimated performance impact
-4. THE AI_Service SHALL prioritize optimization suggestions based on potential impact and implementation difficulty
-5. PERFORMANCE analysis SHALL be user-triggered with no automatic analysis
+### FR-09 — Interactive Graph Canvas
 
-### Requirement 22: Domain-Level Modeling
-
-**User Story:** As a software architect, I want to view high-level component interactions, so that I can understand system architecture without implementation details.
-
-#### Acceptance Criteria
-
-1. WHEN the user activates Architecture Mode, THE Webview SHALL display only Domain-level nodes and their relationships
-2. WHEN displaying Architecture Mode, THE Webview SHALL aggregate file-level and symbol-level connections into domain-level edges
-3. WHEN the user clicks a Domain node, THE Webview SHALL show a summary of contained files and key symbols
-4. THE AI_Service SHALL identify and label architectural patterns in Architecture Mode when requested by the user
-5. THE SQLite_Database SHALL store domain groupings and relationships
-
-### Requirement 23: AI-Powered Code Explanation
-
-**User Story:** As a developer working with unfamiliar code, I want AI-generated explanations, so that I can understand code purpose and logic quickly.
+**User Story:** As a developer, I want to interactively explore the code graph with panning, zooming, and node selection.
 
 #### Acceptance Criteria
 
-1. WHEN the user requests explanation for a symbol, THE AI_Service SHALL generate a natural language description of its purpose and logic
-2. WHEN generating explanations, THE AI_Service SHALL include context from surrounding code and dependencies
-3. THE Webview SHALL display explanations in a readable format with code references
-4. WHEN explanation generation fails, THE Extension_Host SHALL display an error message and allow retry
-5. CODE explanations SHALL be user-triggered with no automatic analysis
+1. The GraphCanvas SHALL use `@xyflow/react` (ReactFlow) for rendering.
+2. Users SHALL be able to zoom, pan, and drag nodes freely.
+3. Clicking a node SHALL select it and open the Inspector Panel with that node's data.
+4. Double-clicking a file or symbol node SHALL post a `navigate-to-file` message instructing the Extension_Host to open the file in the editor at the correct line.
+5. A live FPS counter SHALL be displayed in the toolbar, updated via direct DOM mutation (`ref`) — never via React state — to avoid re-render overhead.
+6. The Webview SHALL display a status bar showing: `N domains · M symbols · P edges` from the current graph data.
+7. Graph search SHALL accept text input with a minimum of 3 characters; matching nodes SHALL be highlighted and non-matching nodes SHALL be dimmed.
+8. The Webview SHALL display proper loading, timeout (8 s), empty-state, and error states.
 
-### Requirement 24: Configuration
+---
 
-**User Story:** As a developer setting up the extension, I want to configure scanning behavior, so that I can customize what gets analyzed.
+### FR-10 — Edge Optimization
 
-#### Acceptance Criteria
-
-1. THE Extension_Host SHALL allow users to configure file exclusion patterns
-2. THE Extension_Host SHALL allow users to configure supported file types
-3. THE Extension_Host SHALL store configuration in VS Code settings
-4. WHEN configuration changes, THE Extension_Host SHALL re-scan the workspace
-5. THE Extension_Host SHALL prompt the user to configure AI service credentials on first activation
-6. THE Extension_Host SHALL allow users to configure indexing exclusion patterns for directories and file types
-
-### Requirement 25: Error Handling
-
-**User Story:** As a developer, I want clear error messages, so that I can diagnose issues quickly.
+**User Story:** As a developer browsing large codebases, I need the graph to remain performant even with thousands of edges.
 
 #### Acceptance Criteria
 
-1. WHEN an error occurs, THE Extension_Host SHALL log the error with context
-2. WHEN parsing fails for a file, THE System_Flow_Extractor SHALL log the error and continue scanning other files
-3. WHEN the Webview fails to render, THE Extension_Host SHALL display an error message with recovery options
-4. THE Extension_Host SHALL provide a command to export diagnostic logs
-5. WHEN the Worker_Process encounters an error, THE Extension_Host SHALL log the error and allow recovery
-6. WHEN the Worker_Process crashes, THE Extension_Host SHALL log the crash reason before restarting
-7. WHEN AI_Service requests fail, THE Extension_Host SHALL display user-friendly error messages with retry options
-8. WHEN database operations fail, THE Worker_Process SHALL rollback transactions and log the error
+1. When an upstream node is collapsed, all edges pointing to its children SHALL be re-routed to the collapsed parent node.
+2. Duplicate `source → target` pairs (after rerouting) SHALL be deduplicated to a single edge.
+3. WHEN total visible edges exceed 10,000, the Webview SHALL uniformly sample them to keep ReactFlow performant.
+4. The LOD system SHALL ensure edges to nodes below the active depth are excluded from the rendered edge set.
+
+---
+
+### FR-11 — Inspector Panel
+
+**User Story:** As a developer, I want to select any node in the graph and immediately see its metrics, dependencies, and risk assessment in a side panel.
+
+#### Acceptance Criteria
+
+1. The Inspector Panel SHALL display three tabs: **Overview**, **Dependencies**, and **Risks + AI**.
+2. The Inspector Panel SHALL support three node types: `domain`, `file`, and `symbol`.
+3. **Overview tab** content per node type:
+
+   | Node Type | Fields |
+   |---|---|
+   | Domain | Name, file count, function count, health %, coupling % |
+   | File | Name, path, symbol count, avg complexity, import count, export count |
+   | Symbol | Name, path:line, line count, complexity, fan-in, fan-out |
+
+4. **Dependencies tab** SHALL show: Calls / Called-By for symbols; Imports / Used-By for files; file list for domains.
+5. **Risks tab** SHALL show: risk level (low/medium/high), heat score (0–100), and a warnings list. Sources: AI `riskScore/riskReason` fields from the Architect Pass, static complexity threshold (>15), fan-in threshold (>20), AI `fragility` flag, and persisted `technical_debt` items.
+6. **AI Actions** (symbol nodes only) SHALL include: Explain, Audit (security), Refactor, Optimize. All actions SHALL use the Reflex Path (Groq) for speed.
+7. The Inspector SHALL debounce node selection changes to avoid race conditions when rapidly clicking between nodes.
+8. Inspector data SHALL be fetched via the `inspector-batch` IPC message (overview + deps + risks in a single round-trip).
+9. Inspector results SHALL be cached in the Webview's in-memory store; the cache SHALL be invalidated on `cache-invalidate` messages.
+
+---
+
+### FR-12 — CodeLens Integration
+
+**User Story:** As a developer, I want to see complexity and coupling metrics inline in my editor without opening the graph.
+
+#### Acceptance Criteria
+
+1. The Extension_Host SHALL register `HeatCodeLensProvider` and `TraceCodeLensProvider` for `typescript`, `typescriptreact`, `python`, and `c` files.
+2. `HeatCodeLensProvider` SHALL display a CodeLens above every indexed function/class showing its complexity score.
+3. WHEN complexity > 15, the CodeLens label SHALL include a ⚠️ warning indicator.
+4. WHEN fan-in > 20, the CodeLens label SHALL include a 🔴 critical indicator.
+5. WHEN fan-out > 15, the CodeLens label SHALL include a 🟡 elevated indicator.
+6. `TraceCodeLensProvider` SHALL display a "Trace" action CodeLens above every function; clicking it SHALL trigger `architect.traceFunction` with the symbol's ID and open the Trace view.
+7. CodeLens providers SHALL be read-only; they SHALL never modify source code.
+
+---
+
+### FR-13 — AI Orchestrator — Dual-Path Routing
+
+**User Story:** As a developer, I want AI-powered code explanations, audits, refactoring suggestions, and performance analysis triggered on demand.
+
+#### Acceptance Criteria
+
+1. All AI queries SHALL be routed by `AIOrchestrator.processQuery()`:
+   - **Reflex Path** (Groq / Llama 3.1-8B-Instant): used for Inspector Panel actions (`forceReflex=true`) and queries classified as `reflex` intent. Target latency <300 ms.
+   - **Strategic Path** (Gemini 1.5 Pro or Amazon Bedrock Nova 2): used for deep architectural analysis queries classified as `strategic` intent.
+2. `IntentRouter.classify()` SHALL classify queries as `reflex` or `strategic` based on keyword pattern matching.
+3. The AI prompt SHALL use the **cAST** structure:
+   - Block 1: Target symbol source code (read from disk, single file read)
+   - Block 2: Dependency graph JSON stubs (from SQLite edges — zero neighbor file reads)
+   - Block 3: Chain-of-Architectural-Thought instruction
+   - Block 4: The actual user question or action prompt
+4. AI responses SHALL be cached in the `ai_cache` SQLite table, keyed by `SHA-256(query + targetCode + outgoingIds + incomingIds + analysisType)`.
+5. WHEN the Strategic Path (Gemini/Bedrock) fails, the system SHALL automatically fall back to the Reflex Path (Groq) and prepend a ⚠️ fallback warning to the response.
+6. WHEN Groq is not configured, AI features SHALL degrade gracefully with a clear "Groq key missing" message.
+7. The active AI provider (Gemini or Bedrock) SHALL be user-configurable via `sentinelFlow.aiProvider` setting.
+
+---
+
+### FR-14 — AI Provider Configuration
+
+**User Story:** As a developer, I want to configure which AI providers I use without modifying source files.
+
+#### Acceptance Criteria
+
+1. The Extension_Host SHALL expose the following VS Code settings:
+
+   | Setting | Type | Description |
+   |---|---|---|
+   | `sentinelFlow.groqApiKey` | string | Groq API key (Llama 3.1) |
+   | `sentinelFlow.geminiApiKey` | string | Google Gemini API key |
+   | `sentinelFlow.vertexProject` | string | Google Cloud Project ID for Vertex AI |
+   | `sentinelFlow.aiProvider` | `gemini`\|`bedrock` | Strategic path provider |
+   | `sentinelFlow.awsRegion` | string | AWS Region for Bedrock (default: `us-east-1`) |
+   | `sentinelFlow.bedrockModelId` | string | Bedrock model ID (default: `us.amazon.nova-2-lite-v1:0`) |
+   | `sentinelFlow.awsAccessKeyId` | string | AWS Access Key ID |
+   | `sentinelFlow.awsSecretAccessKey` | string | AWS Secret Access Key |
+   | `sentinelFlow.useLSP` | boolean | Enable VS Code LSP type resolution (default: false) |
+
+2. The `Configure AI Keys` command SHALL open sequential input boxes for Groq, Vertex, and Gemini keys.
+3. WHENEVER `sentinelFlow.*` settings change, the Extension_Host SHALL propagate the new config to the Worker_Thread via `configure-ai` IPC message.
+4. The Worker_Thread SHALL rebuild the appropriate AI client (Groq/Gemini/Vertex/Bedrock) when config is updated.
+
+---
+
+### FR-15 — Architecture Skeleton and AI Label Refinement
+
+**User Story:** As a software architect, I want a high-level view of file-to-file dependencies with AI-generated module labels.
+
+#### Acceptance Criteria
+
+1. The `get-architecture-skeleton` worker request SHALL return a tree of folder/file nodes with file-to-file import edges.
+2. WHEN `refine=true` is passed, the Worker_Thread SHALL invoke the AI Strategic Path to generate human-friendly module labels for top-level folders.
+3. The `Refine Architecture Labels with AI` command SHALL trigger skeleton fetch with `refine=true` and update the Webview.
+4. The skeleton data format SHALL include: nested `nodes` array (with `id`, `label`, `isFolder`, `children`), flat `edges` array (`source`, `target`, `type`).
+5. The architecture skeleton SHALL be cached for the current index state; a new cache-invalidate event SHALL trigger a refetch.
+
+---
+
+### FR-16 — Impact Analysis (Blast Radius)
+
+**User Story:** As a developer planning a change, I want to see how many symbols would be transitively affected by modifying a given function.
+
+#### Acceptance Criteria
+
+1. `ImpactAnalyzer` SHALL compute blast radius via BFS/DFS over the call-edge graph from the selected symbol.
+2. The analysis SHALL distinguish between direct callers (depth 1) and transitive callers (depth > 1).
+3. The result SHALL include: total affected symbol count, list of directly and transitively impacted symbols, and an impact score.
+4. The `ImpactSidePanel` component SHALL display the blast radius with expandable lists of affected nodes.
+5. Impact analysis SHALL be triggered per-node from the Inspector Panel; it SHALL NOT run automatically.
+
+---
+
+### FR-17 — Domain Classification
+
+**User Story:** As an architect, I want my codebase automatically grouped into meaningful functional domains (auth, api, ui) for high-level navigation.
+
+#### Acceptance Criteria
+
+1. The `DomainClassifier` SHALL assign a domain label to each file based on heuristic rules (path segment and file name matching) covering: `auth`, `api`, `db`/`database`, `ui`/`component`/`view`, `service`, `worker`, `config`, `test`, `util`/`helper`, `middleware`.
+2. When heuristics are insufficient, the system MAY invoke the AI (Groq) to classify the domain using lightweight symbol metadata.
+3. Domain classifications SHALL be cached in the `domain_cache` table per symbol ID with a confidence score (0–100).
+4. Per-domain health metrics (health score, complexity, coupling, symbol count) SHALL be computed and stored in `domain_metadata`.
+5. Domain coupling SHALL be calculated as: `crossDomainEdges / totalEdges`; values >0.6 SHALL be flagged as high coupling.
+
+---
+
+### FR-18 — Technical Debt Detection
+
+**User Story:** As a technical lead, I want to identify long methods, god objects, and high coupling patterns automatically.
+
+#### Acceptance Criteria
+
+1. Technical debt detection SHALL identify the following smell types: `long_method`, `god_object`, `feature_envy`, `high_fan_out`.
+2. Debt items SHALL include: symbol reference, smell type, severity (`high`/`medium`/`low`), description, and detection timestamp.
+3. Detected debt SHALL be persisted in the `technical_debt` table.
+4. The Inspector's Risk tab SHALL surface technical debt items as additional warnings alongside static and AI-based risk signals.
+5. Debt detection SHALL be initiated by the AI Architect Pass or triggered by user action; it SHALL NOT run automatically on every save.
+
+---
+
+### FR-19 — Graph Export
+
+**User Story:** As a developer, I want to export my code graph for use in external tools or documentation.
+
+#### Acceptance Criteria
+
+1. The `Export Graph as JSON` command SHALL produce a `code-graph.json` in the workspace root containing all symbols and edges.
+2. The `Export Architecture Skeleton as JSON` command SHALL produce an `architecture-skeleton.json` in the workspace root.
+3. After export, the Extension_Host SHALL offer to open the exported file in the editor.
+4. Both export commands SHALL be available whether or not the Webview is open.
+
+---
+
+### FR-20 — Directory-Scoped Module Graph
+
+**User Story:** As a developer, I want to right-click a folder in the Explorer and see only the module graph for that directory.
+
+#### Acceptance Criteria
+
+1. The Explorer context menu SHALL show `Sentinel Flow: View Module Graph` when right-clicking a folder.
+2. Selecting this option SHALL open the graph Webview (if not already open) and post a `filter-by-directory` message with the selected path.
+3. The Webview SHALL filter all visible nodes to those whose `filePath` starts with the selected directory path.
+
+---
+
+### FR-21 — Error Handling and Resilience
+
+**User Story:** As a developer, I want clear, actionable error messages when things go wrong.
+
+#### Acceptance Criteria
+
+1. The Extension_Host SHALL log all errors to the `Sentinel Flow` output channel with full context.
+2. WHEN a single file fails to parse, the indexer SHALL log the error and continue with remaining files.
+3. WHEN the Webview request times out (8 seconds), the Webview SHALL display a "Request Timed Out" screen with a Retry button.
+4. WHEN the Worker_Thread is not initialized, commands SHALL show a descriptive error message instead of crashing.
+5. WHEN Bedrock returns `Operation not allowed` (model access not enabled), the AI SHALL fall back to Groq AND display step-by-step instructions for enabling the model in the AWS Console.
+6. WHEN neither Groq nor a strategic AI client is configured, AI actions SHALL return a clear "key missing" message rather than an unhandled error.
+7. WHEN database operations fail, the Worker_Thread SHALL catch the error, log it, and send an error response to the host.
+
+---
+
+## 4. Non-Functional Requirements
+
+### NFR-01 — Performance
+
+| Metric | Requirement |
+|---|---|
+| UI thread blocking | Zero — all parsing, DB writes, and AI calls run in Worker_Thread |
+| Indexing throughput | ≥500 files/minute on typical developer hardware |
+| Edge resolution | O(1) per call/import via CompositeIndex |
+| Memory ceiling | Worker auto-restart at 1 GB heap |
+| Reflex AI latency | <300 ms for Groq/Llama 3.1 |
+| Webview FPS | Updates via direct DOM mutation; no React re-render for FPS counter |
+
+### NFR-02 — Compatibility
+
+| Requirement | Specification |
+|---|---|
+| VS Code version | ≥ 1.85.0 |
+| Node.js version | ≥ 20.0.0 |
+| OS compatibility | Linux, macOS, Windows (no native modules — WASM only) |
+| Languages | TypeScript, TSX, Python, C, C header files |
+
+### NFR-03 — Security
+
+1. AI API keys SHALL be stored via VS Code's configuration API; they SHALL never be hardcoded or committed.
+2. AI prompts SHALL include only the target symbol's source code and lightweight dependency metadata stubs; no bulk file dumps.
+3. The SQLite database is stored in the OS workspace storage directory and is not encrypted. Users with sensitive code should review their AI provider's data retention policies.
+4. The extension SHALL operate in advisor-only mode — it SHALL never automatically modify, create, or delete source files.
+
+### NFR-04 — Cross-Platform Packaging
+
+1. The extension SHALL bundle as a `.vsix` file containing all WASM binary assets.
+2. The `sql-wasm.wasm` file SHALL be copied to `dist/worker/` via the `copy:wasm` build script.
+3. Tree-sitter grammar WASMs SHALL be sourced from `tree-sitter-wasms` npm package.
+4. The build SHALL use `esbuild` with `--external:web-tree-sitter --external:sql.js` to avoid double-bundling WASM loaders.

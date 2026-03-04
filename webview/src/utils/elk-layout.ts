@@ -7,6 +7,26 @@ const elk = new ELK();
 
 // ── Layout Cache ─────────────────────────────────────────────────────────────
 const layoutCache = new Map<string, { nodes: Node[]; edges: Edge[] }>();
+const MAX_CACHE_ENTRIES = 15;
+
+function setLayoutCache(key: string, value: { nodes: Node[]; edges: Edge[] }) {
+    if (layoutCache.size >= MAX_CACHE_ENTRIES) {
+        // Evict oldest (first inserted)
+        layoutCache.delete(layoutCache.keys().next().value!);
+    }
+    layoutCache.set(key, value);
+}
+
+function hashArray(arr: string[]): number {
+    let h = 2166136261;
+    for (const s of arr) {
+        for (let i = 0; i < s.length; i++) {
+            h ^= s.charCodeAt(i);
+            h = Math.imul(h, 16777619);
+        }
+    }
+    return h >>> 0;
+}
 
 export interface ElkLayoutOptions {
     direction?: 'DOWN' | 'RIGHT' | 'UP' | 'LEFT';
@@ -51,11 +71,9 @@ export async function applyElkLayout(
     options: ElkLayoutOptions = {}
 ): Promise<{ nodes: Node[]; edges: Edge[] }> {
     // Check cache first
-    const cacheKey = JSON.stringify({
-        nodes: nodes.map((n) => n.id).sort(),
-        edges: edges.map((e) => `${e.source}->${e.target}`).sort(),
-        options,
-    });
+    const nodeHash = hashArray(nodes.map(n => n.id).sort());
+    const edgeHash = hashArray(edges.map(e => `${e.source}>${e.target}`).sort());
+    const cacheKey = `${nodeHash}-${edgeHash}-${options.viewMode || 'default'}`;
 
     const cached = layoutCache.get(cacheKey);
     if (cached) {
@@ -114,7 +132,11 @@ export async function applyElkLayout(
     const DOMAIN_PADDING_SIDE = 30;
     const FILE_GAP = 40;
 
+    const domainSizeCache = new Map<string, { width: number; height: number }>();
+
     function calcDomainSize(domainNodeId: string): { width: number; height: number } {
+        if (domainSizeCache.has(domainNodeId)) return domainSizeCache.get(domainNodeId)!;
+
         const fileChildren = getDirectChildren(domainNodeId).filter(
             n => n.type === 'fileNode'
         );
@@ -138,13 +160,15 @@ export async function applyElkLayout(
             totalChildHeight += sz.height + FILE_GAP;
         });
 
-        return {
+        const result = {
             width: maxChildWidth + DOMAIN_PADDING_SIDE * 2,
             height: Math.max(
                 totalChildHeight + DOMAIN_PADDING_TOP + DOMAIN_PADDING_SIDE,
                 200
             ),
         };
+        domainSizeCache.set(domainNodeId, result);
+        return result;
     }
 
     // ── Build ELK node map ───────────────────────────────────────────────────
@@ -292,7 +316,7 @@ export async function applyElkLayout(
     }
 
     const result = { nodes: layoutedNodes, edges };
-    layoutCache.set(cacheKey, result);
+    setLayoutCache(cacheKey, result);
     return result;
 }
 

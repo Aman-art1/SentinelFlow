@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import GraphCanvas from './components/GraphCanvas';
 import { InspectorPanel } from './components/inspector';
@@ -138,6 +138,20 @@ function App() {
         }
     }, [viewMode, originalGraphData, isRefreshing, isTimeout, errorMessage]);
 
+    // Compute a map of architecture node types to prevent O(N) DFS on every node query
+    const archNodeTypes = useMemo(() => {
+        const map = new Map<string, NodeType>();
+        if (!architectureSkeleton) return map;
+        const traverse = (nodes: any[]) => {
+            for (const node of nodes) {
+                map.set(node.id, node.isFolder ? 'domain' : 'file');
+                if (node.children) traverse(node.children);
+            }
+        };
+        traverse(architectureSkeleton.nodes);
+        return map;
+    }, [architectureSkeleton]);
+
     // Determine node type from node ID and current state
     const getNodeType = useCallback((nodeId: string): NodeType => {
         if (nodeId.startsWith('domain:')) {
@@ -145,23 +159,9 @@ function App() {
         }
 
         // Accurately resolve folder vs file in Architecture mode
-        if (viewMode === 'architecture' && architectureSkeleton) {
-            let foundFolder = false;
-            let foundFile = false;
-            const traverse = (nodes: any[]) => {
-                for (const node of nodes) {
-                    if (node.id === nodeId) {
-                        if (node.isFolder) foundFolder = true;
-                        else foundFile = true;
-                        return;
-                    }
-                    if (node.children) traverse(node.children);
-                }
-            };
-            traverse(architectureSkeleton.nodes);
-
-            if (foundFolder) return 'domain';
-            if (foundFile) return 'file';
+        if (viewMode === 'architecture' && archNodeTypes.size > 0) {
+            const mappedType = archNodeTypes.get(nodeId);
+            if (mappedType) return mappedType;
         }
 
         // File nodes in codebase have format: domain:filePath (no symbol/line at end)
@@ -171,7 +171,7 @@ function App() {
             return 'symbol';
         }
         return 'file';
-    }, [viewMode, architectureSkeleton]);
+    }, [viewMode, archNodeTypes]);
 
     const handleNodeClick = useCallback(
         (nodeId: string) => {

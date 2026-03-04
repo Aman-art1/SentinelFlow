@@ -18,6 +18,15 @@ interface PendingRequest {
     timeout: NodeJS.Timeout;
 }
 
+/** Requests queued before the worker has finished initializing */
+interface QueuedRequest {
+    request: WorkerRequest;
+    resolve: (response: WorkerResponse) => void;
+    reject: (error: Error) => void;
+    timeoutMs?: number;
+    startedAt: number;
+}
+
 export class WorkerManager {
     private worker: Worker | null = null;
     private pendingRequests: Map<string, PendingRequest> = new Map();
@@ -28,12 +37,26 @@ export class WorkerManager {
     private workerPath: string | null = null;
     private storagePath: string | null = null;
 
+    // READY handshake — resolves when initialize-complete arrives
+    private readyPromise: Promise<void>;
+    private readyResolve!: () => void;
+    private readyReject!: (e: Error) => void;
+
+    // Requests sent before the worker is ready are queued here
+    private preReadyQueue: QueuedRequest[] = [];
+
     constructor(onRestart?: () => void) {
         this.restartCallback = onRestart || null;
+        this.readyPromise = new Promise<void>((res, rej) => {
+            this.readyResolve = res;
+            this.readyReject = rej;
+        });
     }
 
     /**
-     * Start the worker
+     * Start the worker.
+     * Resolves once the worker signals initialize-complete.
+     * No arbitrary timeout — we wait as long as the WASM/DB hydration needs.
      */
     async start(workerPath: string, storagePath: string): Promise<void> {
         if (this.worker) {
@@ -52,7 +75,8 @@ export class WorkerManager {
         // Set up error handler
         this.worker.on('error', (error) => {
             console.error('Worker error:', error);
-            // We don't verify here, let exit handler take care of restart
+            // Propagate startup error to readyPromise so callers don't hang
+            this.readyReject(error);
         });
 
         // Set up exit handler
@@ -69,6 +93,11 @@ export class WorkerManager {
                 if (this.workerPath && this.storagePath) {
                     try {
                         console.log('Attempting to restart worker...');
+                        // Reset the ready handshake for the new worker instance
+                        this.readyPromise = new Promise<void>((res, rej) => {
+                            this.readyResolve = res;
+                            this.readyReject = rej;
+                        });
                         await this.start(this.workerPath, this.storagePath);
                         console.log('Worker restarted successfully');
 
@@ -85,18 +114,14 @@ export class WorkerManager {
             }
         });
 
-        // Initialize the worker with storage path
-        const response = await this.sendRequest({
+        // Send initialize and wait for the ready handshake (no timeout — WASM can be slow)
+        this.worker.postMessage({
             type: 'initialize',
             id: this.generateId(),
             storagePath
-        }, 15000);
+        });
 
-        if (response.type !== 'initialize-complete') {
-            throw new Error('Worker initialization failed');
-        }
-
-        this.isReady = true;
+        await this.readyPromise;
     }
 
     /**
@@ -108,9 +133,14 @@ export class WorkerManager {
             return;
         }
 
-        // Handle ready message
-        if (message.type === 'ready') {
-            this.isReady = true;
+        // Handle initialize-complete: mark ready, resolve the handshake, drain the queue
+        if (message.type === 'initialize-complete' || message.type === 'ready') {
+            if (!this.isReady) {
+                this.isReady = true;
+                this.readyResolve();
+                console.log(`Worker ready. Draining ${this.preReadyQueue.length} queued request(s).`);
+                this.drainPreReadyQueue();
+            }
             return;
         }
 
@@ -129,22 +159,63 @@ export class WorkerManager {
     }
 
     /**
-     * Send request to worker
+     * Flush all requests that arrived before the worker was ready
+     */
+    private drainPreReadyQueue(): void {
+        const queued = this.preReadyQueue.splice(0);
+        for (const item of queued) {
+            // Adjust the timeout to account for the time already spent waiting
+            const elapsedMs = Date.now() - item.startedAt;
+            const remaining = (item.timeoutMs ?? this.REQUEST_TIMEOUT) - elapsedMs;
+            if (remaining <= 0) {
+                item.reject(new Error(`Request ${item.request.type} timed out while waiting for worker to become ready`));
+                continue;
+            }
+            this.dispatchRequest(item.request, item.resolve, item.reject, remaining);
+        }
+    }
+
+    /**
+     * Send request to worker (public API)
+     * If the worker isn't ready yet, the request is queued until it is.
      */
     private sendRequest(request: WorkerRequest, timeoutMs?: number): Promise<WorkerResponse> {
-        if (!this.worker || (!this.isReady && request.type !== 'initialize')) {
-            return Promise.reject(new Error('Worker not ready'));
+        if (!this.worker) {
+            return Promise.reject(new Error('Worker not started'));
         }
 
-        return new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                this.pendingRequests.delete(request.id);
-                reject(new Error(`Request ${request.type} timed out`));
-            }, timeoutMs || this.REQUEST_TIMEOUT);
-
-            this.pendingRequests.set(request.id, { resolve, reject, timeout });
-            this.worker!.postMessage(request);
+        return new Promise<WorkerResponse>((resolve, reject) => {
+            if (!this.isReady && request.type !== 'initialize') {
+                // Queue request — will be dispatched once initialize-complete arrives
+                this.preReadyQueue.push({
+                    request,
+                    resolve,
+                    reject,
+                    timeoutMs,
+                    startedAt: Date.now(),
+                });
+                return;
+            }
+            this.dispatchRequest(request, resolve, reject, timeoutMs);
         });
+    }
+
+    /**
+     * Actually wire the request into the worker and start its timeout clock
+     */
+    private dispatchRequest(
+        request: WorkerRequest,
+        resolve: (r: WorkerResponse) => void,
+        reject: (e: Error) => void,
+        timeoutMs?: number
+    ): void {
+        const timeout = setTimeout(() => {
+            this.pendingRequests.delete(request.id);
+            reject(new Error(`Request ${request.type} timed out`));
+        }, timeoutMs ?? this.REQUEST_TIMEOUT);
+
+        this.pendingRequests.set(request.id, { resolve, reject, timeout });
+        this.worker!.postMessage(request);
     }
 
     /**

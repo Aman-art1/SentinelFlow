@@ -90,7 +90,6 @@ const DomainNode = memo(({ data, style }: NodeProps<Node<DomainNodeData>> & { st
                 padding: '0 20px', // Extra padding
                 color: 'var(--vscode-editor-foreground)',
             }}
-            title={`Domain: ${domain}\nStatus: ${status}\nHealth: ${safeHealth.healthScore}%`}
         >
             <Handle type="target" position={Position.Top} className="w-1.5 h-1.5 !bg-gray-400" />
 

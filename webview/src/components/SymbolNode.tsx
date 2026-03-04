@@ -17,6 +17,7 @@ export interface SymbolNodeData extends Record<string, unknown> {
     isClickable?: boolean;
     isHighlighted?: boolean;
     zoomLevel?: number; // Injected from GraphCanvas
+    compactMode?: boolean; // When true, renders as icon-only coin
 }
 
 const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { style?: React.CSSProperties }) => {
@@ -29,6 +30,7 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
         isActive = false,
         isClickable = true,
         isHighlighted = false,
+        compactMode = false,
     } = data;
 
     // Safe coupling with fallback to avoid crash on undefined
@@ -70,23 +72,25 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
             style={{
                 ...style,
                 backgroundColor: 'var(--vscode-editor-background)',
-                borderRadius: '12px', // More rounded for symbols
+                borderRadius: compactMode ? '50%' : '12px',
                 border: `${borderWidth}px solid ${borderColor}`,
                 opacity: containerOpacity,
                 boxShadow: isHighlighted ? `0 0 0 2px ${borderColor}40` : 'none',
-                width: '100%',
-                height: '100%',
+                width: compactMode ? '32px' : '100%',
+                height: compactMode ? '32px' : '100%',
+                minWidth: compactMode ? '32px' : 'unset',
+                aspectRatio: compactMode ? '1/1' : 'unset',
                 cursor: isClickable ? 'pointer' : 'default',
                 pointerEvents: isDimmed ? 'none' : 'auto',
                 transition: 'all 0.2s ease',
                 display: 'flex',
                 alignItems: 'center',
-                padding: '4px 8px',
-                gap: '8px',
-                fontSize: '14px', // Increased from 13px
+                justifyContent: compactMode ? 'center' : 'flex-start',
+                padding: compactMode ? '0' : '4px 8px',
+                gap: compactMode ? '0' : '8px',
+                fontSize: '14px',
                 color: 'var(--vscode-editor-foreground)',
             }}
-            title={`Symbol: ${label}\nType: ${symbolType}\nComplexity: ${complexity}\nCBO: ${safeCoupling.cbo}`}
         >
             <Handle type="target" position={Position.Top} className="w-1 h-1 !bg-gray-400" />
 
@@ -98,18 +102,18 @@ const SymbolNode = memo(({ data, style }: NodeProps<Node<SymbolNodeData>> & { st
                 {getIcon()}
             </span>
 
-            {/* Name - Hidden at low zoom levels via CSS/Parent */}
-            <div className="flex-1 min-w-0 flex flex-col justify-center node-label">
-                <span className="font-medium truncate leading-tight">
-                    {label}
-                </span>
+            {/* Name - Hidden in compact mode */}
+            {!compactMode && (
+                <div className="flex-1 min-w-0 flex flex-col justify-center node-label">
+                    <span className="font-medium truncate leading-tight">
+                        {label}
+                    </span>
+                </div>
+            )}
 
-                {/* Optional: Small subtitle for very high zoom? for now just name as requested "Icon + Node Name" */}
-            </div>
-
-            {/* Is Sink Indicator */}
-            {data.isSink && (
-                <span className="text-[8px] font-bold text-red-500 border border-red-500 rounded px-1" title="Sink">
+            {/* Is Sink Indicator - Hidden in compact mode */}
+            {!compactMode && data.isSink && (
+                <span className="text-[8px] font-bold text-red-500 border border-red-500 rounded px-1">
                     S
                 </span>
             )}

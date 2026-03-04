@@ -1,1500 +1,728 @@
-# Design Document: SentinelFlow
+# Design Document — Sentinel Flow (v0.1.0)
 
-## Overview
+## 1. Vision and Goals
 
-SentinelFlow is a VS Code extension that provides system flow visualization and architectural insight. The extension is an advisor-only tool that explains architectural risk without modifying code. Phase 1 implements the System Flow Extractor with four main components:
+Sentinel Flow transforms a static codebase into a **living, queryable graph** that developers and architects can explore interactively. The design is governed by three invariants:
 
-1. **Extension Host** (Main Process): Orchestrates operations, manages UI integration, handles VS Code API interactions, provides CodeLens, and manages AI service integration
-2. **Worker Process** (Background Thread): Performs scanning, parsing, symbol extraction, relationship detection, metric calculation, and database operations without blocking the Extension Host
-3. **System Flow Extractor**: Scans directories, parses files with Tree-sitter, extracts symbols and relationships, calculates metrics, and builds graph models
-4. **Webview** (Renderer Process): Provides interactive React-based visualization using React Flow with multiple visualization modes
+1. **Zero UI-thread blocking** — every CPU-intensive operation runs inside the background Worker Thread.
+2. **Advisor-only** — the extension reads code and provides insight; it never writes, modifies, or deletes source files.
+3. **No native modules** — all heavy binary dependencies (SQLite, Tree-sitter parsers) are distributed as WebAssembly, ensuring the `.vsix` works on Linux, macOS, and Windows without recompilation.
 
-The extension uses Tree-sitter for language-agnostic parsing, SQLite for persistent storage, and integrates with AI services (Vertex AI, Gemini, Groq) for intelligent code analysis. All AI features are user-triggered, maintaining the zero-noise philosophy.
+---
 
-## Architecture
+## 2. System Architecture
 
-### High-Level Component Diagram
-
-```mermaid
-graph TB
-    subgraph "VS Code Extension Host"
-        EXT[Extension Main<br/>src/extension.ts]
-        CMD[Command Handler]
-        CODELENS[CodeLens Provider]
-        EDITOR[Custom Editor Provider<br/>.sflow files]
-        AI[AI Service Client<br/>Vertex/Gemini/Groq]
-    end
-    
-    subgraph "Worker Process"
-        WRK[Worker Thread<br/>src/worker/worker.ts]
-        SCAN[Directory Scanner]
-        PARSE[Tree-sitter Parser]
-        EXTRACT[Symbol Extractor]
-        METRICS[Metrics Calculator<br/>Complexity/Fan-In/Fan-Out]
-        RISK[Risk Scoring Engine]
-        DB[(SQLite Database<br/>Drizzle ORM)]
-    end
-    
-    subgraph "Webview (React)"
-        WV[Webview Panel]
-        FLOW[React Flow Graph]
-        MODES[Visualization Modes<br/>Architecture/Flow/Trace/Full]
-        FILTERS[Advanced Filtering System]
-        UI[UI Components]
-    end
-    
-    EXT <-->|Message Passing| WRK
-    EXT <-->|VS Code Messaging| WV
-    EXT --> CODELENS
-    EXT --> AI
-    WRK --> SCAN
-    SCAN --> PARSE
-    PARSE --> EXTRACT
-    EXTRACT --> METRICS
-    METRICS --> RISK
-    RISK --> DB
-    DB --> WV
-    WV --> FLOW
-    WV --> MODES
-    WV --> FILTERS
-    UI --> WV
-    EDITOR --> EXT
-    CODELENS --> DB
-    AI --> WV
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        VS Code Process Space                               │
+│                                                                            │
+│  ┌──────────────────────────────┐     ┌───────────────────────────────┐   │
+│  │       Extension Host         │     │       Webview (Chromium)       │   │
+│  │  (Node.js main thread)       │     │   React 18 SPA                │   │
+│  │                              │ IPC │                               │   │
+│  │  extension.ts                │◄───►│  App.tsx                      │   │
+│  │  sidebar-provider.ts         │     │  GraphCanvas.tsx              │   │
+│  │  webview-provider.ts         │     │  InspectorPanel               │   │
+│  │  codelens-provider.ts        │     │  ViewModeBar.tsx              │   │
+│  │  file-watcher.ts             │     │  stores/ (Zustand)            │   │
+│  │  WorkerManager               │     │  utils/ (ELK, BFS, metrics)   │   │
+│  │        │                     │     └───────────────────────────────┘   │
+│  │        │ worker_threads IPC  │                                          │
+│  │        ▼                     │                                          │
+│  │  ┌────────────────────────┐  │                                          │
+│  │  │    Worker Thread       │  │                                          │
+│  │  │                        │  │                                          │
+│  │  │  IndexWorker           │  │                                          │
+│  │  │  ├── TreeSitterParser  │  │                                          │
+│  │  │  │     (WASM)          │  │                                          │
+│  │  │  ├── SymbolExtractor   │  │                                          │
+│  │  │  ├── StringRegistry    │  │                                          │
+│  │  │  ├── CompositeIndex    │  │                                          │
+│  │  │  ├── CodeIndexDatabase │  │                                          │
+│  │  │  │     (sql.js WASM)   │  │                                          │
+│  │  │  ├── AIOrchestrator    │  │                                          │
+│  │  │  ├── InspectorService  │  │                                          │
+│  │  │  └── ImpactAnalyzer    │  │                                          │
+│  │  └────────────────────────┘  │                                          │
+│  └──────────────────────────────┘                                          │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Process Communication
+---
 
-The extension uses message-passing for inter-process communication:
+## 3. Layered Architecture
 
-- **Extension Host ↔ Worker Process**: Node.js Worker Threads with structured message protocol
-- **Extension Host ↔ Webview**: VS Code Webview API with postMessage
-- **Extension Host ↔ AI Services**: HTTP/REST API calls with retry logic
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PRESENTATION LAYER                                          │
+│  Webview SPA (React + @xyflow/react + Tailwind)              │
+│  GraphCanvas • Inspector Panel • ViewModeBar • SunburstGraph │
+├──────────────────────────────────────────────────────────────┤
+│  INTEGRATION LAYER                                            │
+│  Extension Host (TypeScript + VS Code API)                   │
+│  Commands • CodeLens • File Watcher • Webview Bridge         │
+├──────────────────────────────────────────────────────────────┤
+│  INTELLIGENCE LAYER (Worker Thread)                          │
+│  AI Orchestrator • Inspector Service • Impact Analyzer       │
+│  Domain Classifier • Debt Detector                           │
+├──────────────────────────────────────────────────────────────┤
+│  PARSING LAYER (Worker Thread)                               │
+│  Tree-sitter WASM • Symbol Extractor • StringRegistry        │
+│  CompositeIndex • PendingCall/Import pipeline                │
+├──────────────────────────────────────────────────────────────┤
+│  PERSISTENCE LAYER (Worker Thread)                           │
+│  sql.js WASM SQLite • CodeIndexDatabase • Drizzle ORM Schema │
+└──────────────────────────────────────────────────────────────┘
+```
 
-### Data Flow
+---
 
-1. **Scanning Flow**: File System → Worker Process (Directory Scanner) → Tree-sitter Parser → Symbol Extractor → Metrics Calculator → Risk Scoring Engine → SQLite Database
-2. **Visualization Flow**: Extension Host (request) → Worker Process (query DB) → Webview (render with mode-specific filtering)
-3. **Navigation Flow**: Webview (node click) → Extension Host → VS Code Editor API
-4. **CodeLens Flow**: Extension Host (file open) → Worker Process (query DB) → CodeLens Provider (display)
-5. **AI Analysis Flow**: Extension Host (user request) → AI Service → Extension Host (process) → Webview (display)
+## 4. Component Directory Map
 
-## Components and Interfaces
+```
+sentinel-flow/
+├── src/                         # Extension Host + Worker Thread (TypeScript)
+│   ├── extension.ts             # Activation, command registration, orchestration
+│   ├── webview-provider.ts      # GraphWebviewProvider (full panel webview)
+│   ├── sidebar-provider.ts      # SidebarProvider (activity bar sidebar)
+│   ├── codelens-provider.ts     # HeatCodeLensProvider + TraceCodeLensProvider
+│   ├── file-watcher.ts          # FileWatcherManager — 1 s debounced batch watcher
+│   ├── ai/
+│   │   ├── orchestrator.ts      # AIOrchestrator — intent routing + prompt building
+│   │   ├── intent-router.ts     # IntentRouter — reflex vs. strategic classification
+│   │   ├── groq-client.ts       # Groq/Llama 3.1 API client
+│   │   ├── gemini-client.ts     # Google Gemini 1.5 Pro API client
+│   │   ├── vertex-client.ts     # Vertex AI client
+│   │   ├── bedrock-client.ts    # Amazon Bedrock client (Nova 2)
+│   │   ├── debt-detector.ts     # Technical debt smell detector
+│   │   └── index.ts             # Re-exports
+│   ├── db/
+│   │   ├── database.ts          # CodeIndexDatabase (sql.js wrapper)
+│   │   └── schema.ts            # Drizzle ORM table definitions
+│   ├── domain/
+│   │   ├── classifier.ts        # DomainClassifier — heuristic + AI classification
+│   │   ├── health.ts            # computeDomainHealth() metric function
+│   │   └── index.ts
+│   └── worker/
+│       ├── worker.ts            # IndexWorker — message handler + core operations
+│       ├── worker-manager.ts    # WorkerManager — host-side lifecycle + RPC proxy
+│       ├── parser.ts            # TreeSitterParser — WASM grammar bootstrap
+│       ├── symbol-extractor.ts  # SymbolExtractor — AST → symbols + pending edges
+│       ├── composite-index.ts   # CompositeIndex + edge resolution functions
+│       ├── string-registry.ts   # StringRegistry — integer-interned string store
+│       ├── inspector-service.ts # InspectorService — Inspector Panel backend logic
+│       ├── impact-analyzer.ts   # ImpactAnalyzer — blast radius BFS/DFS
+│       └── message-protocol.ts  # Typed union types for all IPC messages
+├── webview/src/
+│   ├── App.tsx                  # Root component + VS Code message bridge
+│   ├── components/
+│   │   ├── GraphCanvas.tsx      # Main ReactFlow canvas (60,329 bytes)
+│   │   ├── DomainNode.tsx       # Domain node renderer
+│   │   ├── FileNode.tsx         # File node renderer
+│   │   ├── SymbolNode.tsx       # Symbol node renderer
+│   │   ├── ViewModeBar.tsx      # Architecture/Codebase/Trace mode switcher
+│   │   ├── ImpactSidePanel.tsx  # Blast radius panel
+│   │   ├── SunburstGraph.tsx    # Sunburst chart (D3)
+│   │   └── inspector/           # Inspector Panel components (10 files)
+│   ├── stores/
+│   │   ├── useGraphStore.ts     # Zustand graph state (data, mode, skeleton, trace)
+│   │   └── useInspectorStore.ts # Zustand inspector state (selection, tabs, cache)
+│   ├── utils/
+│   │   ├── elk-layout.ts        # ELK hierarchical/layered layout
+│   │   ├── bfs-layout.ts        # BFS layout for Trace view
+│   │   ├── layout.ts            # Dagre layout
+│   │   ├── hierarchy.ts         # Graph hierarchy builder
+│   │   ├── graphFilter.ts       # Node/edge filtering (LOD, search, directory)
+│   │   ├── metrics.ts           # Client-side metric calculations
+│   │   ├── performance.ts       # PerformanceMonitor (RAF-based FPS)
+│   │   ├── performance-monitor.ts
+│   │   └── relationshipDetector.ts
+│   ├── types/
+│   │   ├── inspector.ts         # NodeType, inspection data interfaces
+│   │   └── (index)
+│   ├── panel/
+│   │   └── dataProvider.ts      # Inspector data fetching + caching layer
+│   └── types.ts                 # GraphData, VSCodeAPI, messages interfaces
+└── resources/
+    └── icon.svg
+```
 
-### 1. Extension Host (src/extension.ts)
+---
 
-**Responsibilities:**
-- Extension lifecycle management (activate/deactivate)
-- Command registration and handling
-- CodeLens provider registration and management
-- Custom editor provider registration for .sflow files
-- Webview panel management
-- Configuration management
-- Worker process spawning and supervision
-- Coordination with System Flow Extractor
+## 5. Data Flow — Full Indexing Pipeline
 
-**Key Interfaces:**
+```
+Extension Host (main thread)
+        │
+        │  1. vscode.workspace.findFiles('**/*.{ts,tsx,py,c,h}', excludes)
+        │
+        │  2. For each 100-file chunk:
+        │     a. Read file → SHA-256 hash only
+        │     b. POST  check-file-hash-batch  →  Worker
+        │     c. Receive list of changed paths
+        │     d. Read content ONLY for changed files
+        │     e. POST  parse-batch  →  Worker
+        │
+        ▼
+Worker Thread
+        │
+        │  handleParseBatch():
+        │  ┌──────────────────────────────────────────────────────┐
+        │  │  For each file (up to BATCH_SIZE=500 per flush):     │
+        │  │    a. db.deleteSymbolsByFile(filePath)               │
+        │  │    b. tree = parser.parse(content, language)          │
+        │  │    c. result = extractor.extract(tree, ...)           │
+        │  │       → result.symbols[] (NewSymbol records)          │
+        │  │       → result.pendingCalls[]  (provisional IDs)      │
+        │  │       → result.pendingImports[]                       │
+        │  │    d. Rebase provisional caller IDs to global offset  │
+        │  │    e. Push to symbolBuffer                            │
+        │  │    f. Every 500 symbols: flushSymbolBuffer()          │
+        │  │       → db.insertSymbols()  → get real DB IDs         │
+        │  │       → register in CompositeIndex                    │
+        │  │       → update globalSymbolMap + globalPathIndex      │
+        │  │    g. Every 50 files: db.saveToDisk()                 │
+        │  └──────────────────────────────────────────────────────┘
+        │
+        │  After all files:
+        │    a. Resolve provisional callerDbIds → real IDs
+        │       (provisionalToDbId map, all globally indexed)
+        │    b. Resolve relative imports → absolute pathIds
+        │       (StringRegistry snapshot + suffix scan)
+        │    c. resolvePendingCalls()   → call edge records
+        │    d. resolvePendingImports() → import edge records
+        │    e. db.insertEdgeBatch(callEdges, 'call')
+        │    f. db.insertEdgeBatch(importEdges, 'import')
+        │    g. db.postIndexOptimization() → ANALYZE + VACUUM
+        │    h. db.saveToDisk()
+        │    i. Send  parse-batch-complete  →  Host
+        │
+        ▼
+Extension Host
+        │
+        │  graphWebviewProvider.postMessage({ type: 'cache-invalidate' })
+        │
+        ▼
+Webview
+        │  Clears Inspector cache, deselects current node
+```
+
+---
+
+## 6. IPC Message Protocol
+
+The Extension Host and Worker Thread communicate exclusively via Node's `worker_threads` structured-clone messaging. All messages are typed as discriminated unions in `src/worker/message-protocol.ts`.
+
+### 6.1 Request Types (Host → Worker)
+
+| Message Type | Payload | Response Type |
+|---|---|---|
+| `initialize` | `storagePath: string` | `initialize-complete` |
+| `parse` | `filePath, content, language` | `parse-complete` |
+| `parse-batch` | `files[]` | `parse-batch-complete` |
+| `check-file-hash` | `filePath, content` | `file-hash-result` |
+| `check-file-hash-batch` | `files[]{filePath, contentHash}` | `file-hash-batch-result` |
+| `delete-file-symbols` | `filePath` | `delete-file-symbols-complete` |
+| `query-symbols` | `query: string` | `query-result` |
+| `query-file` | `filePath` | `query-result` |
+| `export-graph` | — | `graph-export` |
+| `clear` | — | `clear-complete` |
+| `stats` | — | `stats-result` |
+| `configure-ai` | `AIConfig` | `configure-ai-complete` |
+| `ai-query` | `query, symbolId?, analysisType?` | `ai-response` |
+| `ai-classify-intent` | `query` | `ai-intent-result` |
+| `get-context` | `symbolId` | `context-result` |
+| `inspector-overview` | `nodeId, nodeType, requestId` | `inspector-overview-result` |
+| `inspector-dependencies` | `nodeId, nodeType, requestId` | `inspector-dependencies-result` |
+| `inspector-risks` | `nodeId, nodeType, requestId` | `inspector-risks-result` |
+| `inspector-batch` | `nodeId, nodeType, requestId` | `inspector-batch-result` |
+| `inspector-ai-action` | `nodeId, action, requestId` | `inspector-ai-result` |
+| `inspector-ai-why` | `nodeId, metric, requestId` | `inspector-ai-why-result` |
+| `inspector-invalidate-cache` | — | `clear-complete` |
+| `refine-graph` | — | `refine-graph-complete` |
+| `analyze-impact` | `nodeId` | `analyze-impact-result` |
+| `refine-incremental` | `changedFiles[]` | — |
+| `get-architecture-skeleton` | `refine: boolean` | `architecture-skeleton` |
+| `trace-function` | `symbolId?, nodeId?` | `function-trace` |
+| `shutdown` | — | — |
+
+### 6.2 Timeout Policy
+
+| Operation Class | Timeout |
+|---|---|
+| AI action (`inspector-ai-action`, `inspector-ai-why`) | 200,000 ms |
+| Architecture refine with AI | 120,000 ms |
+| Bulk parse batch (`parse-batch`) | 600,000 ms |
+| All other requests | 30,000 ms |
+
+### 6.3 Pre-Ready Queue
+
+Requests arriving before the worker sends `initialize-complete` are placed in `preReadyQueue`. When the handshake completes, `drainPreReadyQueue()` dispatches them with their remaining timeout (elapsed time is subtracted). Requests that have already timed out are rejected immediately.
+
+---
+
+## 7. Symbol Extraction Pipeline — CompositeIndex and StringRegistry
+
+### 7.1 StringRegistry
 
 ```typescript
-interface ExtensionContext {
-  subscriptions: Disposable[];
-  workspaceState: Memento;
-  globalState: Memento;
-  extensionPath: string;
-}
+class StringRegistry {
+    private strings: string[] = [];
+    private map: Map<string, number> = new Map();
 
-interface WorkerMessage {
-  type: 'scan' | 'query' | 'getMetrics' | 'status';
-  payload: any;
-  requestId: string;
-}
-
-interface WorkerResponse {
-  type: 'success' | 'error' | 'progress';
-  payload: any;
-  requestId: string;
-}
-
-interface WebviewMessage {
-  type: 'requestGraph' | 'selectNode' | 'openFile' | 'applyFilter' | 'changeMode';
-  payload: any;
-}
-
-interface WebviewResponse {
-  type: 'graphData' | 'nodeDetails' | 'error';
-  payload: any;
+    intern(s: string): number { /* deduplicate → return integer ID */ }
+    resolve(id: number): string | undefined { ... }
+    exportSnapshot(): string[] { ... }
 }
 ```
 
-**Commands:**
-- `sentinelflow.openGraph`: Open visualization webview
-- `sentinelflow.traceSymbol`: Open Trace Mode for selected symbol
-- `sentinelflow.analyzeRisks`: Run risk analysis on workspace
-- `sentinelflow.analyzeBlastRadius`: Calculate blast radius for selected symbol
-- `sentinelflow.explainCode`: Request AI explanation for selection
-- `sentinelflow.detectTechnicalDebt`: Run technical debt analysis
-- `sentinelflow.suggestRefactoring`: Get AI refactoring suggestions
-- `sentinelflow.analyzePerformance`: Get AI performance optimization suggestions
-- `sentinelflow.rescan`: Re-scan workspace and rebuild graph
-- `sentinelflow.rebuildIndex`: Clear and rebuild entire index
-- `sentinelflow.configureApiKeys`: Open API key configuration
-- `sentinelflow.exportDiagnostics`: Export diagnostic logs
+All symbol names and file paths are interned once per batch run. This reduces heap allocations by 30–60% for large workspaces where the same paths appear thousands of times.
 
-### 2. Worker Process (src/worker/worker.ts)
-
-**Responsibilities:**
-- File system scanning and monitoring
-- Tree-sitter parsing orchestration
-- Symbol extraction and relationship mapping
-- Cyclomatic complexity calculation
-- Fan-In and Fan-Out calculation
-- In-memory graph construction and maintenance
-- Message handling from Extension Host
-
-**Key Interfaces:**
-
-```typescript
-interface WorkerRequest {
-  type: 'scan' | 'query' | 'getMetrics';
-  payload: any;
-  requestId: string;
-}
-
-interface ScanRequest {
-  workspacePath: string;
-  filePatterns: string[];
-  excludePatterns: string[];
-}
-
-interface MetricsQuery {
-  symbolId?: string;
-  filePath?: string;
-}
-```
-
-**Database Schema (Drizzle ORM):**
-
-```typescript
-// Domains table
-const domains = sqliteTable('domains', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  path: text('path').notNull(),
-  createdAt: integer('created_at').notNull(),
-});
-
-// Files table
-const files = sqliteTable('files', {
-  id: text('id').primaryKey(),
-  path: text('path').notNull().unique(),
-  domainId: text('domain_id').references(() => domains.id),
-  hash: text('hash').notNull(),
-  lastIndexed: integer('last_indexed').notNull(),
-});
-
-// Symbols table
-const symbols = sqliteTable('symbols', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  type: text('type').notNull(),
-  fileId: text('file_id').references(() => files.id),
-  startLine: integer('start_line').notNull(),
-  endLine: integer('end_line').notNull(),
-  complexity: integer('complexity'),
-  fanIn: integer('fan_in').default(0),
-  fanOut: integer('fan_out').default(0),
-  riskScore: real('risk_score'),
-});
-
-// Relationships table
-const relationships = sqliteTable('relationships', {
-  id: text('id').primaryKey(),
-  fromSymbolId: text('from_symbol_id').references(() => symbols.id),
-  toSymbolId: text('to_symbol_id').references(() => symbols.id),
-  type: text('type').notNull(),
-  weight: integer('weight').default(1),
-});
-
-// Technical debt table
-const technicalDebt = sqliteTable('technical_debt', {
-  id: text('id').primaryKey(),
-  symbolId: text('symbol_id').references(() => symbols.id),
-  type: text('type').notNull(),
-  severity: text('severity').notNull(),
-  description: text('description').notNull(),
-  remediation: text('remediation'),
-  detectedAt: integer('detected_at').notNull(),
-});
-```
-
-### 3. System Flow Extractor
-
-**Responsibilities:**
-- File system scanning
-- Tree-sitter parsing orchestration
-- Symbol extraction and relationship mapping
-- In-memory graph construction
-- Cyclomatic complexity calculation
-- Fan-In and Fan-Out calculation
-
-**Key Interfaces:**
-
-```typescript
-interface ParsedSymbol {
-  id: string;
-  name: string;
-  type: 'function' | 'class' | 'variable' | 'interface' | 'type';
-  filePath: string;
-  startLine: number;
-  endLine: number;
-  complexity?: number;
-}
-
-interface SymbolRelationship {
-  fromSymbolId: string;
-  toSymbolId: string;
-  type: 'calls' | 'imports' | 'references';
-}
-
-interface GraphModel {
-  symbols: Map<string, ParsedSymbol>;
-  relationships: SymbolRelationship[];
-  fanIn: Map<string, number>;
-  fanOut: Map<string, number>;
-}
-```
-
-**Algorithm: Directory Scanning**
+### 7.2 CompositeIndex
 
 ```
-function scanWorkspace(workspacePath: string, excludePatterns: string[]): string[]:
-  files = []
-  
-  function scanDirectory(dirPath: string):
-    entries = readDirectory(dirPath)
-    
-    for each entry in entries:
-      if entry.isDirectory():
-        if not matchesExcludePattern(entry.path, excludePatterns):
-          scanDirectory(entry.path)
-      else if entry.isFile():
-        if isSupportedFileType(entry.path):
-          files.push(entry.path)
-  
-  scanDirectory(workspacePath)
-  return files
+CompositeIndex:
+  nameIndex:  Map<nameId,   Set<IndexEntry>>
+  pathIndex:  Map<pathId,   Set<IndexEntry>>
+  lineIndex:  Map<number,   Set<IndexEntry>>
+
+IndexEntry: { dbId, nameId, pathId, typeId, line }
 ```
 
-**Algorithm: Symbol Extraction**
+`resolvePendingCalls()` maps each `PendingCall.calleeName` → `nameIndex` lookup → O(1) set of candidates. If there is only one candidate, the edge is added directly. If multiple candidates match by name, path affinity is used as a tiebreaker.
+
+`resolvePendingImports()` maps each `PendingImport.sourcePathId` → `pathIndex` lookup → select the entry whose path matches the import module string.
+
+### 7.3 Provisional Caller ID Scheme
+
+During batch parsing, the `SymbolExtractor` cannot know the real DB IDs of the symbols it is currently extracting (they haven't been inserted yet). It emits `callerDbId = -(localIdx + 1)` where `localIdx` is the symbol's 0-based position in that file's symbol array.
+
+When accumulated into the batch, the `fileOffset` (= total symbols already buffered globally) is added:
 
 ```
-function extractSymbols(filePath: string): ParsedSymbol[]:
-  sourceCode = readFile(filePath)
-  ast = treeSitter.parse(sourceCode)
-  symbols = []
-  
-  function traverse(node: ASTNode):
-    if node.type in ['function_declaration', 'class_declaration', 'variable_declaration']:
-      complexity = null
-      if node.type == 'function_declaration':
-        complexity = calculateComplexity(node)
-      
-      symbol = {
-        id: generateId(filePath, node.name),
-        name: node.name,
-        type: mapNodeTypeToSymbolType(node.type),
-        filePath: filePath,
-        startLine: node.startPosition.row,
-        endLine: node.endPosition.row,
-        complexity: complexity
-      }
-      symbols.push(symbol)
-    
-    for each child in node.children:
-      traverse(child)
-  
-  traverse(ast.rootNode)
-  return symbols
+globalProvisionalId = -(fileOffset + localIdx + 1)
 ```
 
-**Algorithm: Cyclomatic Complexity Calculation**
+After `insertSymbols()` returns real IDs, `provisionalToDbId` maps each global provisional key to the real DB row ID, allowing all pending calls to be resolved in a single pass.
 
-```
-function calculateComplexity(node: ASTNode): number:
-  complexity = 1  // Base complexity
-  
-  function traverse(n: ASTNode):
-    if n.type in ['if_statement', 'while_statement', 'for_statement', 
-                   'case_statement', 'catch_clause', 'conditional_expression',
-                   'logical_and', 'logical_or']:
-      complexity += 1
-    
-    for each child in n.children:
-      traverse(child)
-  
-  traverse(node)
-  return complexity
-```
+---
 
-**Algorithm: Relationship Detection**
+## 8. Database Schema
 
-```
-function extractRelationships(filePath: string, ast: ASTNode, symbols: ParsedSymbol[]): SymbolRelationship[]:
-  relationships = []
-  
-  function traverse(node: ASTNode, currentSymbol: ParsedSymbol):
-    if node.type == 'call_expression':
-      calledSymbol = resolveSymbol(node.functionName, symbols)
-      if calledSymbol:
-        relationships.push({
-          fromSymbolId: currentSymbol.id,
-          toSymbolId: calledSymbol.id,
-          type: 'calls'
-        })
-    
-    if node.type == 'import_statement':
-      importedFile = resolveImport(node.importPath, filePath)
-      relationships.push({
-        fromSymbolId: currentSymbol.id,
-        toSymbolId: importedFile,
-        type: 'imports'
-      })
-    
-    for each child in node.children:
-      traverse(child, currentSymbol)
-  
-  for each symbol in symbols:
-    symbolNode = findNodeForSymbol(ast, symbol)
-    traverse(symbolNode, symbol)
-  
-  return relationships
-```
+```sql
+-- Core symbol store
+CREATE TABLE symbols (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                TEXT    NOT NULL,
+  type                TEXT    NOT NULL,   -- function|class|variable|interface|...
+  file_path           TEXT    NOT NULL,
+  range_start_line    INTEGER NOT NULL,
+  range_start_column  INTEGER NOT NULL,
+  range_end_line      INTEGER NOT NULL,
+  range_end_column    INTEGER NOT NULL,
+  complexity          INTEGER NOT NULL DEFAULT 0,
+  domain              TEXT,               -- AI/heuristic domain label
+  purpose             TEXT,               -- AI-inferred purpose
+  impact_depth        INTEGER,            -- AI-inferred impact depth
+  search_tags         TEXT,               -- JSON array of AI-inferred tags
+  fragility           TEXT,               -- 'low'|'medium'|'high' (AI)
+  risk_score          INTEGER,            -- 0–100 composite risk
+  risk_reason         TEXT                -- AI explanation of risk
+);
 
-**Algorithm: Fan-In and Fan-Out Calculation**
+-- Edges between symbols
+CREATE TABLE edges (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  target_id  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  type       TEXT    NOT NULL,            -- call|import|inherit|implement
+  reason     TEXT                         -- optional AI-inferred reason
+);
 
-```
-function calculateMetrics(graph: GraphModel):
-  fanIn = new Map()
-  fanOut = new Map()
-  
-  // Initialize all symbols with 0
-  for each symbol in graph.symbols:
-    fanIn.set(symbol.id, 0)
-    fanOut.set(symbol.id, 0)
-  
-  // Count relationships
-  for each relationship in graph.relationships:
-    fanOut.set(relationship.fromSymbolId, fanOut.get(relationship.fromSymbolId) + 1)
-    fanIn.set(relationship.toSymbolId, fanIn.get(relationship.toSymbolId) + 1)
-  
-  graph.fanIn = fanIn
-  graph.fanOut = fanOut
-```
+-- File tracking (incremental indexing)
+CREATE TABLE files (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path       TEXT    NOT NULL UNIQUE,
+  content_hash    TEXT    NOT NULL,
+  last_indexed_at TEXT    NOT NULL
+);
 
-### 4. CodeLens Provider
+-- Key-value metadata (last_index_time, workspace root, etc.)
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 
-**Responsibilities:**
-- Provide inline code metrics in editor
-- Display complexity indicators
-- Display Fan-In and Fan-Out metrics
-- Offer Trace action entry point
-- Apply visual warning thresholds
-- Remain strictly read-only
+-- AI response cache
+CREATE TABLE ai_cache (
+  hash       TEXT PRIMARY KEY,            -- SHA-256 of (query+code+deps)
+  response   TEXT NOT NULL,              -- JSON-serialised AIResponse
+  created_at TEXT NOT NULL
+);
 
-**Key Interfaces:**
+-- Domain aggregate health
+CREATE TABLE domain_metadata (
+  domain        TEXT PRIMARY KEY,
+  health_score  INTEGER NOT NULL,
+  complexity    INTEGER NOT NULL,
+  coupling      INTEGER NOT NULL,         -- 0–100 scale
+  symbol_count  INTEGER NOT NULL,
+  last_updated  TEXT    NOT NULL
+);
 
-```typescript
-interface CodeLensData {
-  symbolId: string;
-  complexity?: number;
-  fanIn: number;
-  fanOut: number;
-  range: Range;
-}
+-- Per-symbol AI domain classification cache
+CREATE TABLE domain_cache (
+  symbol_id   INTEGER PRIMARY KEY,
+  domain      TEXT    NOT NULL,
+  confidence  INTEGER NOT NULL,           -- 0–100
+  cached_at   TEXT    NOT NULL
+);
 
-interface WarningThreshold {
-  complexity: number;  // > 15 = warning
-  fanIn: number;       // > 20 = critical
-  fanOut: number;      // > 15 = elevated
-}
+-- Technical debt items per symbol
+CREATE TABLE technical_debt (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  smell_type  TEXT    NOT NULL,           -- long_method|god_object|feature_envy|high_fan_out
+  severity    TEXT    NOT NULL,           -- high|medium|low
+  description TEXT    NOT NULL,
+  detected_at TEXT    NOT NULL
+);
 ```
 
-**Implementation:**
+---
 
-```typescript
-class SentinelFlowCodeLensProvider implements CodeLensProvider {
-  async provideCodeLenses(document: TextDocument): Promise<CodeLens[]> {
-    const symbols = await worker.getSymbolsForFile(document.uri.fsPath);
-    const lenses: CodeLens[] = [];
-    
-    for (const symbol of symbols) {
-      const range = new Range(symbol.startLine, 0, symbol.startLine, 0);
-      const fanIn = await worker.getFanIn(symbol.id);
-      const fanOut = await worker.getFanOut(symbol.id);
-      
-      // Determine styling based on thresholds
-      const isComplexityWarning = symbol.complexity && symbol.complexity > 15;
-      const isFanInCritical = fanIn > 20;
-      const isFanOutElevated = fanOut > 15;
-      
-      // Complexity indicator
-      if (symbol.complexity) {
-        const complexityLens = new CodeLens(range, {
-          title: `Complexity: ${symbol.complexity}${isComplexityWarning ? ' ⚠️' : ''}`,
-          command: '',
-        });
-        lenses.push(complexityLens);
-      }
-      
-      // Coupling indicator
-      const couplingLens = new CodeLens(range, {
-        title: `Fan-In: ${fanIn}${isFanInCritical ? ' 🔴' : ''} | Fan-Out: ${fanOut}${isFanOutElevated ? ' 🟡' : ''}`,
-        command: '',
-      });
-      lenses.push(couplingLens);
-      
-      // Trace action
-      const traceLens = new CodeLens(range, {
-        title: '$(debug-start) Trace',
-        command: 'sentinelflow.traceSymbol',
-        arguments: [symbol.id],
-      });
-      lenses.push(traceLens);
-    }
-    
-    return lenses;
-  }
-}
-```
+## 9. AI Orchestration Architecture
 
-**Correctness Property:**
-
-For any symbol displayed with CodeLens, the complexity and coupling values shown must exactly match the values computed by the System Flow Extractor.
-
-### 5. Visualization Pipeline
-
-**Responsibilities:**
-- Transform graph data for React Flow
-- Handle user interactions (zoom, pan, selection)
-- Implement semantic zoom via hierarchical aggregation
-- Apply coupling heat indicators
-- Render visualization modes (Architecture, Flow, Trace, Full)
-- Apply advanced filtering system
-
-**Key Interfaces:**
-
-```typescript
-interface GraphNode {
-  id: string;
-  type: 'file' | 'symbol';
-  data: {
-    label: string;
-    complexity?: number;
-    fanIn?: number;
-    fanOut?: number;
-    couplingHeat?: number;
-  };
-  position: { x: number; y: number };
-}
-
-interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  type: 'calls' | 'imports' | 'references' | 'aggregated';
-  animated?: boolean;
-}
-
-interface VisualizationMode {
-  type: 'architecture' | 'flow' | 'trace' | 'full';
-  focusSymbolId?: string;
-  maxDepth?: number;
-}
-
-interface FilterState {
-  riskLevel?: 'low' | 'medium' | 'high';
-  nodeType?: 'file' | 'symbol';
-  directoryScope?: string;
-  nameSearch?: string;
-}
-
-interface ZoomLevel {
-  level: number; // 0 = file-level, 1 = symbol-level
-  aggregated: boolean;
-}
-```
-
-**Algorithm: Graph Transformation for React Flow**
+### 9.1 Dual-Path Routing
 
 ```
-function transformToReactFlow(graph: GraphModel): { nodes: GraphNode[], edges: GraphEdge[] }:
-  nodes = []
-  edges = []
-  
-  // Create nodes for each symbol
-  for each symbol in graph.symbols.values():
-    couplingHeat = calculateCouplingHeat(
-      graph.fanIn.get(symbol.id),
-      graph.fanOut.get(symbol.id)
-    )
-    
-    nodes.push({
-      id: symbol.id,
-      type: 'symbol',
-      data: {
-        label: symbol.name,
-        fanIn: graph.fanIn.get(symbol.id),
-        fanOut: graph.fanOut.get(symbol.id),
-        couplingHeat: couplingHeat
-      },
-      position: { x: 0, y: 0 } // Layout will be computed by React Flow
-    })
-  
-  // Create edges for each relationship
-  for each relationship in graph.relationships:
-    edges.push({
-      id: `${relationship.fromSymbolId}-${relationship.toSymbolId}`,
-      source: relationship.fromSymbolId,
-      target: relationship.toSymbolId,
-      type: relationship.type
-    })
-  
-  return { nodes, edges }
+User Action (Inspector Panel)
+        │
+        ▼
+AIOrchestrator.processQuery(query, options)
+        │
+        ├── 1. IntentRouter.classify(query) → { type: 'reflex'|'strategic', confidence }
+        │
+        ├── 2. assembleContext(options) → SymbolContext | null
+        │         └── db.getSymbolWithContext(symbolId)
+        │             → { symbol, neighbors[], outgoingEdges[], incomingEdges[] }
+        │
+        ├── 3. buildNodeContext(context) → NodeContext
+        │         ├── Read target symbol source from disk (1 file read only)
+        │         └── Map edges → NodeDependencyStub[] (0 neighbor file reads)
+        │
+        ├── 4. buildPrompt(query, nodeContext) → string
+        │         ├── Block 1: Target symbol source code
+        │         ├── Block 2: Dependency graph JSON stubs
+        │         ├── Block 3: Chain-of-Architectural-Thought instruction
+        │         └── Block 4: The question / action
+        │
+        ├── 5. Check ai_cache (SHA-256 hash of query+code+deps+analysisType)
+        │         └── Cache hit → return immediately (latency ≈ 0)
+        │
+        ├── 6a. REFLEX PATH (forceReflex=true OR intent='reflex')
+        │         └── GroqClient.complete(prompt, systemPrompt)
+        │             Target latency: <300 ms
+        │
+        └── 6b. STRATEGIC PATH (intent='strategic')
+                 ├── aiProvider='bedrock'  → BedrockClient.analyzeCode()
+                 ├── aiProvider='gemini'   → GeminiClient.analyzeCode()  (or VertexClient)
+                 └── On any failure        → Fallback to Reflex path + ⚠️ header prepended
 ```
 
-**Algorithm: Coupling Heat Calculation**
+### 9.2 cAST Prompt Design
+
+The **cAST** (Contextual AST) format was designed to prevent LLM "Lost in the Middle" syndrome:
+
+- **Target code only** — the AI receives the raw source of exactly the selected symbol (lines `rangeStartLine` to `rangeEndLine`), read on-demand from disk.
+- **Lightweight dependency stubs** — instead of dumping thousands of lines of neighbor source code, outgoing and incoming edges are serialized as JSON metadata stubs: `{ name, type, filePath, relationType }`.
+- **Chain-of-Thought instruction** — the prompt explicitly asks the AI to identify architectural patterns before answering, anchoring its reasoning in the dependency graph.
+
+### 9.3 AI Provider Matrix
+
+| Provider | SDK | Path | Use Case |
+|---|---|---|---|
+| Groq / Llama 3.1-8B-Instant | `groq-sdk` | Reflex | Interactive Inspector actions, fast queries |
+| Google Gemini 1.5 Pro | `@google/generative-ai` | Strategic | Deep architectural analysis |
+| Vertex AI (Gemini 1.5 Pro) | `@google-cloud/vertexai` | Strategic | Enterprise GCP projects |
+| Amazon Bedrock (Nova 2) | `@aws-sdk/client-bedrock-runtime` | Strategic | AWS-native environments |
+
+When the strategic client is unavailable or fails, the system always falls back to Groq, ensuring the extension remains useful even with partial configuration.
+
+---
+
+## 10. Graph Visualization Architecture
+
+### 10.1 View Modes and Data Sources
 
 ```
-function calculateCouplingHeat(fanIn: number, fanOut: number): number:
-  totalCoupling = fanIn + fanOut
-  
-  // Normalize to 0-100 scale
-  // Thresholds: 0-5 = low, 6-15 = medium, 16+ = high
-  if totalCoupling <= 5:
-    return totalCoupling * 10  // 0-50
-  else if totalCoupling <= 15:
-    return 50 + (totalCoupling - 5) * 3  // 50-80
-  else:
-    return min(100, 80 + (totalCoupling - 15) * 2)  // 80-100
+ViewModeBar (component)
+    │
+    ├── "architecture" ──► ArchitectureSkeleton (from worker)
+    │                       └─► ELK hierarchical layout
+    │                           DomainNode (folder) + FileNode
+    │
+    ├── "codebase" ──────► GraphData (from worker)
+    │                       ├─► 3-tier LOD system
+    │                       │    Depth 0: DomainNode only
+    │                       │    Depth 1: DomainNode + FileNode
+    │                       │    Depth 2: DomainNode + FileNode + SymbolNode
+    │                       └─► ELK layered/radial layout
+    │
+    └── "trace" ──────────► FunctionTrace (BFS from selected symbol)
+                             └─► BFS layout (bfs-layout.ts)
 ```
 
-**Algorithm: Risk Level Calculation**
+### 10.2 GraphCanvas — Rendering Pipeline
 
 ```
-function calculateRiskLevel(symbol: ParsedSymbol, fanIn: number, fanOut: number): 'low' | 'medium' | 'high':
-  // High risk: complexity > 15 OR fanIn > 20 OR fanOut > 15
-  if (symbol.complexity && symbol.complexity > 15) or fanIn > 20 or fanOut > 15:
-    return 'high'
-  
-  // Medium risk: complexity > 10 OR fanIn > 10 OR fanOut > 10
-  if (symbol.complexity && symbol.complexity > 10) or fanIn > 10 or fanOut > 10:
-    return 'medium'
-  
-  return 'low'
+GraphStore (Zustand)
+    displayedGraphData | architectureSkeleton | functionTrace
+        │
+        ▼
+GraphCanvas.tsx
+    │
+    ├── buildNodes(graphData, viewMode, depth, collapsed, filterConfig)
+    │     └── graphFilter.ts → LOD filter → collapsed filter → search filter
+    │
+    ├── buildEdges(nodes, graphData, collapsed)
+    │     ├── re-route edges from collapsed children → parent node
+    │     ├── deduplicate source→target pairs
+    │     └── sample if total > 10,000
+    │
+    ├── layoutNodes(nodes, edges, viewMode)  → elk-layout.ts / bfs-layout.ts
+    │
+    └── <ReactFlow nodes={...} edges={...} />
+          ├── nodeTypes: { domainNode, fileNode, symbolNode }
+          └── edgeTypes: { default, animated }
 ```
 
-**Algorithm: Visualization Mode Rendering**
+### 10.3 Node ID Format Convention
+
+| Node Type | ID Format | Example |
+|---|---|---|
+| Domain (codebase) | `domain:<domainName>` | `domain:auth` |
+| Domain (architecture/folder) | path string | `src/auth` |
+| File | `<domainName>:<absoluteFilePath>` or just `<absoluteFilePath>` | `auth:/home/.../auth.ts` |
+| Symbol | `<absoluteFilePath>:<symbolName>:<startLine>` | `/home/.../auth.ts:login:42` |
+
+### 10.4 Performance Optimisations
+
+| Technique | Description |
+|---|---|
+| LOD system | Nodes below active depth are never instantiated; zero React VDOM cost |
+| Edge rerouting | Collapsed subtrees get a single parent edge, not N child edges |
+| Edge sampling | >10,000 edges → uniform random sample to maintain 60 FPS |
+| FPS counter | Updated via direct DOM `ref.textContent` mutation — no React re-render |
+| Inspector cache | WebView-side Zustand cache keyed on `nodeId`; only fetched once per selection |
+| Pre-ready queue | Host-side queue prevents duplicate initialization |
+| Content-hash dedup | SHA-256 prevents re-parsing unchanged files on every index run |
+
+---
+
+## 11. Inspector Panel Architecture
 
 ```
-function renderVisualizationMode(graph: GraphModel, mode: VisualizationMode): { nodes: GraphNode[], edges: GraphEdge[] }:
-  switch mode.type:
-    case 'architecture':
-      return renderArchitectureMode(graph)
-    
-    case 'flow':
-      return renderFlowMode(graph, mode.focusSymbolId, mode.maxDepth)
-    
-    case 'trace':
-      return renderTraceMode(graph, mode.focusSymbolId)
-    
-    case 'full':
-      return transformToReactFlow(graph)
-
-function renderArchitectureMode(graph: GraphModel): { nodes: GraphNode[], edges: GraphEdge[] }:
-  // Display file-level nodes only with aggregated relationships
-  return aggregateToFileLevel(graph)
-
-function renderFlowMode(graph: GraphModel, symbolId: string, maxDepth: number): { nodes: GraphNode[], edges: GraphEdge[] }:
-  // Display execution path from selected symbol
-  visited = new Set()
-  nodes = []
-  edges = []
-  
-  function traverse(currentId: string, depth: number):
-    if depth > maxDepth or currentId in visited:
-      return
-    
-    visited.add(currentId)
-    symbol = graph.symbols.get(currentId)
-    nodes.push(createNode(symbol))
-    
-    // Get outgoing calls only (directional)
-    outgoing = graph.relationships.filter(r => r.fromSymbolId == currentId and r.type == 'calls')
-    for each rel in outgoing:
-      edges.push(createEdge(rel))
-      traverse(rel.toSymbolId, depth + 1)
-  
-  traverse(symbolId, 0)
-  return { nodes, edges }
-
-function renderTraceMode(graph: GraphModel, symbolId: string): { nodes: GraphNode[], edges: GraphEdge[] }:
-  // Display both incoming and outgoing relationships
-  nodes = []
-  edges = []
-  visited = new Set()
-  
-  // Add focus symbol
-  focusSymbol = graph.symbols.get(symbolId)
-  nodes.push(createNode(focusSymbol))
-  visited.add(symbolId)
-  
-  // Add all incoming relationships (Fan-In)
-  incoming = graph.relationships.filter(r => r.toSymbolId == symbolId)
-  for each rel in incoming:
-    if not visited.has(rel.fromSymbolId):
-      symbol = graph.symbols.get(rel.fromSymbolId)
-      nodes.push(createNode(symbol))
-      visited.add(rel.fromSymbolId)
-    edges.push(createEdge(rel))
-  
-  // Add all outgoing relationships (Fan-Out)
-  outgoing = graph.relationships.filter(r => r.fromSymbolId == symbolId)
-  for each rel in outgoing:
-    if not visited.has(rel.toSymbolId):
-      symbol = graph.symbols.get(rel.toSymbolId)
-      nodes.push(createNode(symbol))
-      visited.add(rel.toSymbolId)
-    edges.push(createEdge(rel))
-  
-  return { nodes, edges }
+useInspectorStore (Zustand)
+    selectedNode: { id, type }
+    tabs: { overview, deps, risks, aiResults }
+        │
+        ▼
+InspectorPanel
+    │
+    ├── useEffect → getDataProvider(vscode).fetchNodeData(nodeId, nodeType)
+    │     │
+    │     │  DataProvider (panel/dataProvider.ts)
+    │     │    ├── Check Zustand cache (Map<nodeId, InspectorData>)
+    │     │    └── Miss → postMessage inspector-batch → Worker
+    │     │               ← inspector-batch-result
+    │     │               → cache result → update store
+    │     │
+    │     ▼
+    ├── OverviewTab
+    │     Fields: name, path, fileCount, functionCount, symbolCount,
+    │             complexity, fanIn, fanOut, healthPercent, coupling
+    │
+    ├── DependenciesTab
+    │     Symbol: calls[], calledBy[]
+    │     File:   imports[], usedBy[]
+    │     Domain: file list
+    │
+    ├── RisksTab
+    │     Sources:
+    │       1. symbol.riskScore / symbol.riskReason (AI Architect Pass)
+    │       2. complexity > 15 (static threshold)
+    │       3. fanIn > 20 (coupling threshold)
+    │       4. symbol.fragility === 'high' (AI flag)
+    │       5. technicalDebt[] items from DB
+    │     Output: level (low|medium|high), heatScore (0–100), warnings[]
+    │
+    └── AIActionsTab (symbol nodes only)
+          Actions: explain | audit (security) | refactor | optimize
+          Route:   forceReflex=true → Groq always
+          Display: markdown-rendered response
+          Patch:   if refactor contains ```diff, extract patch object
 ```
 
-**Algorithm: Advanced Filtering**
+---
+
+## 12. Domain Classification Design
+
+### 12.1 Heuristic Rules (classifier.ts)
+
+The `DomainClassifier` sets a domain based on path segment and file name pattern matching. Heuristic domains (in priority order):
+
+| Domain | Trigger patterns |
+|---|---|
+| `auth` | `auth`, `login`, `session`, `token`, `jwt`, `oauth` |
+| `api` | `api`, `route`, `controller`, `endpoint`, `handler` |
+| `db` | `db`, `database`, `repository`, `migration`, `orm`, `schema` |
+| `ui` | `ui`, `component`, `view`, `page`, `screen`, `widget`, `modal` |
+| `service` | `service`, `provider`, `manager`, `use-case` |
+| `worker` | `worker`, `job`, `queue`, `task`, `scheduler` |
+| `config` | `config`, `settings`, `env`, `constants` |
+| `test` | `test`, `spec`, `__tests__` |
+| `util` | `util`, `helper`, `lib`, `common`, `shared` |
+| `middleware` | `middleware`, `interceptor`, `guard`, `filter` |
+
+### 12.2 Domain Health Formula
 
 ```
-function applyFilters(nodes: GraphNode[], filters: FilterState): GraphNode[]:
-  filteredNodes = nodes
-  
-  // Apply risk level filter
-  if filters.riskLevel:
-    filteredNodes = filteredNodes.filter(node => {
-      riskLevel = calculateRiskLevel(node.data.complexity, node.data.fanIn, node.data.fanOut)
-      return riskLevel == filters.riskLevel
-    })
-  
-  // Apply node type filter
-  if filters.nodeType:
-    filteredNodes = filteredNodes.filter(node => node.type == filters.nodeType)
-  
-  // Apply directory scope filter
-  if filters.directoryScope:
-    filteredNodes = filteredNodes.filter(node => {
-      symbol = getSymbolById(node.id)
-      return symbol.filePath.startsWith(filters.directoryScope)
-    })
-  
-  // Apply name search filter
-  if filters.nameSearch:
-    filteredNodes = filteredNodes.filter(node => 
-      node.data.label.toLowerCase().includes(filters.nameSearch.toLowerCase())
-    )
-  
-  return filteredNodes
-
-function getVisibleNodeCount(filteredNodes: GraphNode[], totalNodes: GraphNode[]): string:
-  return `Showing ${filteredNodes.length} of ${totalNodes.length} nodes`
+coupling        = crossDomainEdges / totalEdges
+complexity_norm = avg(symbol.complexity) / 20.0  (capped at 1.0)
+healthScore     = max(0, 100 - coupling*40 - complexity_norm*30 - debtPenalty)
 ```
 
-**Correctness Properties:**
+---
 
-1. For any selected visualization mode, only nodes and relationships relevant to that mode must be rendered, and all unrelated elements must be hidden.
-2. A node must be visible if and only if it satisfies all active filters simultaneously (logical AND).
-3. The displayed visible-node count must exactly match the number of rendered nodes.
-
-**Algorithm: Semantic Zoom via Hierarchical Aggregation**
+## 13. File Watcher — Batch Pipeline
 
 ```
-function applySemanticZoom(graph: GraphModel, zoomLevel: number): { nodes: GraphNode[], edges: GraphEdge[] }:
-  if zoomLevel >= 1:
-    // Symbol-level view (fully expanded)
-    return transformToReactFlow(graph)
-  else:
-    // File-level view (aggregated)
-    return aggregateToFileLevel(graph)
+vscode.FileSystemWatcher('**/*.{ts,tsx,py,c,h}')
+    │
+    onDidChange / onDidCreate
+        │
+        └── enqueueFile(uri)
+              ├── pendingFiles.add(uri.fsPath)
+              └── debounce 1000 ms
+                    │
+                    ▼
+              processPendingBatch()
+                    │
+                    ├── Pass 1: hash all pending files (no content in RAM)
+                    │
+                    ├── Pass 2: checkFileHashBatch() → changed paths only
+                    │
+                    ├── Pass 3: read content ONLY for changed paths
+                    │
+                    └── parseBatch() → re-index
+                          └── sentinel-flow.invalidate-cache
 
-function aggregateToFileLevel(graph: GraphModel): { nodes: GraphNode[], edges: GraphEdge[] }:
-  fileNodes = new Map()
-  fileEdges = new Map()
-  
-  // Group symbols by file
-  for each symbol in graph.symbols.values():
-    if not fileNodes.has(symbol.filePath):
-      fileNodes.set(symbol.filePath, {
-        id: symbol.filePath,
-        type: 'file',
-        data: {
-          label: getFileName(symbol.filePath),
-          fanIn: 0,
-          fanOut: 0
-        },
-        position: { x: 0, y: 0 }
-      })
-    
-    // Aggregate metrics
-    fileNode = fileNodes.get(symbol.filePath)
-    fileNode.data.fanIn += graph.fanIn.get(symbol.id)
-    fileNode.data.fanOut += graph.fanOut.get(symbol.id)
-  
-  // Aggregate relationships to file-level
-  for each relationship in graph.relationships:
-    fromFile = graph.symbols.get(relationship.fromSymbolId).filePath
-    toFile = graph.symbols.get(relationship.toSymbolId).filePath
-    
-    if fromFile != toFile:
-      edgeKey = `${fromFile}-${toFile}`
-      if not fileEdges.has(edgeKey):
-        fileEdges.set(edgeKey, {
-          id: edgeKey,
-          source: fromFile,
-          target: toFile,
-          type: 'aggregated'
-        })
-  
-  return {
-    nodes: Array.from(fileNodes.values()),
-    edges: Array.from(fileEdges.values())
-  }
+    onDidDelete
+        └── deleteFileSymbols(uri.fsPath)  (immediate, no batching)
 ```
 
-### 6. Custom Editor Provider for .sflow Files
+---
 
-**Responsibilities:**
-- Register custom editor for .sflow file extension
-- Serialize and deserialize graph state
-- Provide save and load functionality
+## 14. CodeLens Design
 
-**Implementation:**
+### 14.1 HeatCodeLensProvider
 
-```typescript
-class SFlowEditorProvider implements CustomTextEditorProvider {
-  async resolveCustomTextEditor(
-    document: TextDocument,
-    webviewPanel: WebviewPanel
-  ): Promise<void> {
-    // Load graph state from .sflow file
-    const graphState = JSON.parse(document.getText());
-    
-    // Send graph state to webview
-    webviewPanel.webview.postMessage({
-      type: 'loadGraph',
-      payload: graphState
-    });
-    
-    // Handle save requests from webview
-    webviewPanel.webview.onDidReceiveMessage(message => {
-      if (message.type === 'saveGraph') {
-        const edit = new WorkspaceEdit();
-        edit.replace(
-          document.uri,
-          new Range(0, 0, document.lineCount, 0),
-          JSON.stringify(message.payload, null, 2)
-        );
-        workspace.applyEdit(edit);
-      }
-    });
-  }
-}
-```
-
-### 7. AI Integration Layer
-
-**Responsibilities:**
-- Manage API client instances for Vertex AI, Gemini, and Groq
-- Route requests to appropriate AI service
-- Handle rate limiting and retries
-- Format prompts and parse responses
-- Cache AI responses
-- Maintain zero-noise philosophy (all features user-triggered)
-
-**Key Interfaces:**
-
-```typescript
-interface AIService {
-  explain(code: string, context: string): Promise<string>;
-  detectTechnicalDebt(code: string): Promise<TechnicalDebtItem[]>;
-  suggestRefactoring(code: string, context: string): Promise<RefactoringSuggestion[]>;
-  analyzePerformance(code: string, context: string): Promise<PerformanceInsight[]>;
-  assessFragility(code: string, metrics: SymbolMetrics): Promise<number>;
-  identifyArchitecturalPatterns(domains: Domain[]): Promise<ArchitecturalPattern[]>;
-}
-
-interface TechnicalDebtItem {
-  type: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  description: string;
-  location: { line: number; column: number };
-  remediation: string;
-}
-
-interface RefactoringSuggestion {
-  title: string;
-  description: string;
-  benefits: string[];
-  risks: string[];
-  diff: string;
-  estimatedEffort: 'low' | 'medium' | 'high';
-}
-
-interface PerformanceInsight {
-  type: 'algorithmic' | 'memory' | 'io';
-  description: string;
-  impact: 'high' | 'medium' | 'low';
-  suggestion: string;
-  estimatedImprovement: string;
-}
-```
-
-**AI Service Selection Strategy:**
+For every indexed function and class in the active editor:
 
 ```
-function selectAIService(taskType: string): AIService:
-  if taskType == 'explain' or taskType == 'refactor':
-    // Use Gemini for conversational tasks (if available)
-    if geminiApiKey:
-      return geminiService
-    else:
-      return vertexService
-  
-  else if taskType == 'debt' or taskType == 'performance':
-    // Use Groq for fast analysis (if available)
-    if groqApiKey:
-      return groqService
-    else:
-      return vertexService
-  
-  else:
-    // Default to Vertex AI
-    return vertexService
+[Heat: {complexity}]  ← always shown
+[⚠️ High Complexity ({complexity})]  ← complexity > 15
+[🔴 High Coupling (fan-in:{fanIn})]  ← fanIn > 20
+[🟡 High Fan-Out ({fanOut})]         ← fanOut > 15
 ```
 
-### 8. Risk Scoring Engine
-
-**Responsibilities:**
-- Calculate risk scores for symbols
-- Identify high-risk code patterns
-- Compute blast radius
-- Aggregate risk metrics
-- Store risk data in database
-
-**Algorithm: Risk Score Calculation**
+### 14.2 TraceCodeLensProvider
 
 ```
-function calculateRiskScore(symbol: ParsedSymbol, fanIn: number, fanOut: number, aiFragility: number): number:
-  score = 0
-  
-  // Complexity factor (0-40 points)
-  if symbol.complexity and symbol.complexity > 15:
-    score += min(40, symbol.complexity * 2)
-  
-  // Coupling factor (0-30 points)
-  if fanIn > 20:
-    score += min(30, fanIn)
-  
-  // AI fragility assessment (0-30 points)
-  if aiFragility:
-    score += aiFragility
-  
-  // Normalize to 0-100
-  return min(100, score)
+[⚡ Trace]  ← shown above every function
+           └── executes: architect.traceFunction(symbolId, nodeId)
+               → Worker: trace-function request
+               → BFS over call graph from this symbol
+               → Webview: function-trace data + setViewMode('trace')
 ```
 
-**Algorithm: Blast Radius Calculation**
+---
 
-```
-function calculateBlastRadius(symbolId: string, db: Database): BlastRadiusResult:
-  affected = new Set()
-  distances = new Map()
-  queue = [(symbolId, 0)]
-  
-  while queue is not empty:
-    (currentId, distance) = queue.dequeue()
-    
-    if currentId in affected:
-      continue
-    
-    affected.add(currentId)
-    distances.set(currentId, distance)
-    
-    // Get all symbols that depend on current symbol
-    dependents = db.query(`
-      SELECT fromSymbolId FROM relationships 
-      WHERE toSymbolId = ? AND type IN ('calls', 'imports', 'references')
-    `, [currentId])
-    
-    for each dep in dependents:
-      if dep.fromSymbolId not in affected:
-        queue.enqueue((dep.fromSymbolId, distance + 1))
-  
-  return {
-    affectedSymbols: affected,
-    distances: distances,
-    totalImpact: affected.size
-  }
+## 15. Build System
+
+### 15.1 Extension Build
+
+```bash
+npm run build
+  = npm run build:webview
+    && esbuild src/extension.ts src/worker/worker.ts \
+       --bundle --outdir=dist \
+       --external:vscode --external:web-tree-sitter --external:sql.js \
+       --format=cjs --platform=node --target=node20 --sourcemap
+    && cp node_modules/sql.js/dist/sql-wasm.wasm dist/worker/sql-wasm.wasm
 ```
 
-### 9. Domain-Level Modeling
+Key esbuild flags:
+- `--external:web-tree-sitter` — prevents esbuild from trying to bundle the WASM loader (it self-loads via `URL()`)
+- `--external:sql.js` — same reason; sql.js loads `sql-wasm.wasm` at runtime via `fs.readFile`
+- Both `extension.ts` and `worker.ts` are bundled as separate entry points so they don't share module state
 
-**Responsibilities:**
-- Group files into architectural domains
-- Aggregate domain-level relationships
-- Support Architecture Mode visualization
-- Enable AI pattern detection
+### 15.2 Webview Build
 
-**Algorithm: Domain Extraction**
-
-```
-function extractDomains(files: File[]): Domain[]:
-  domains = new Map()
-  
-  for each file in files:
-    // Extract domain from directory structure
-    // e.g., "src/auth/login.ts" → domain "auth"
-    pathParts = file.path.split('/')
-    domainName = pathParts[1] // Assuming src/domain/file structure
-    
-    if not domains.has(domainName):
-      domains.set(domainName, {
-        id: generateId(domainName),
-        name: domainName,
-        path: pathParts.slice(0, 2).join('/'),
-        files: []
-      })
-    
-    domains.get(domainName).files.push(file)
-  
-  return Array.from(domains.values())
+```bash
+cd webview && npm run build  (Vite)
 ```
 
-## Data Models
+Output goes to `webview/dist/`, which is embedded in the webview panel HTML by `GraphWebviewProvider`.
 
-### Core Entities
+### 15.3 VSIX Packaging
 
-**Domain:**
-- Represents a high-level architectural component or module
-- Aggregates related files
-- Used in Architecture Mode visualization
-- Stored in SQLite database
-
-**File:**
-- Represents a source code file
-- Contains multiple symbols
-- Tracks hash for incremental indexing
-- Linked to domain
-- Stored in SQLite database
-
-**Symbol:**
-- Represents a code entity (function, class, variable, etc.)
-- Contains location information (file path, line numbers)
-- Contains cyclomatic complexity (for functions)
-- Contains risk score
-- Primary unit of analysis
-- Stored in SQLite database
-
-**Relationship:**
-- Represents a connection between symbols
-- Types: calls, imports, references
-- Stored as edges in the graph
-- Weighted for frequency analysis
-- Stored in SQLite database
-
-**Technical Debt Item:**
-- Represents a detected code smell or anti-pattern
-- Linked to specific symbol
-- Includes severity and remediation guidance
-- Detected by AI analysis
-- Stored in SQLite database
-
-**Graph Model:**
-- In-memory data structure containing all symbols and relationships
-- Includes computed metrics (Cyclomatic Complexity, Fan-In, Fan-Out, Risk Score)
-- Source of truth for visualization and CodeLens
-- Loaded from SQLite database on workspace open
-
-### State Management
-
-**Extension State:**
-- Worker process handle
-- Active webview panels
-- Configuration cache
-- Current graph model
-- AI service clients
-- Database connection reference
-
-**Worker State:**
-- SQLite database connection
-- In-memory graph model cache
-- Tree-sitter parser instances
-- Scanning queue
-- Memory usage tracker
-
-**Webview State (React):**
-- Graph data (nodes, edges)
-- Active visualization mode
-- Active filters
-- Zoom level
-- Selected nodes
-- Filter state
-- Technical debt overlay state
-- Blast radius visualization state
-
-## Correctness Properties
-
-A property is a characteristic or behavior that should hold true across all valid executions of a system.
-
-### Property 1: Complete Workspace Scanning
-
-*For any* workspace containing supported file types, when scanning is initiated, all supported files in the workspace should be discovered by the System_Flow_Extractor.
-
-**Validates: Requirements 1.1**
-
-### Property 2: Symbol Extraction Completeness
-
-*For any* valid source file, when parsed by Tree_Sitter, the extracted symbols should include all functions, classes, variables, and interfaces defined in that file.
-
-**Validates: Requirements 2.1**
-
-### Property 3: Cyclomatic Complexity Accuracy
-
-*For any* function, the calculated Cyclomatic_Complexity should equal 1 plus the number of decision points (if, while, for, case, catch, &&, ||, ?) in that function.
-
-**Validates: Requirements 2.3**
-
-### Property 4: Relationship Detection Accuracy
-
-*For any* function call in a source file, the System_Flow_Extractor should create a corresponding relationship in the graph model.
-
-**Validates: Requirements 3.1**
-
-### Property 5: Fan-In Calculation Correctness
-
-*For any* symbol, the calculated Fan_In value should equal the number of relationships where that symbol is the target.
-
-**Validates: Requirements 4.1**
-
-### Property 6: Fan-Out Calculation Correctness
-
-*For any* symbol, the calculated Fan_Out value should equal the number of relationships where that symbol is the source.
-
-**Validates: Requirements 4.2**
-
-### Property 6: Graph Node Completeness
-
-*For any* extracted symbol, there should be a corresponding node in the visualization graph.
-
-**Validates: Requirements 5.1**
-
-### Property 7: Node Selection State
-
-*For any* node in the graph, when clicked, the node should transition to a selected state and its details should be retrievable.
-
-**Validates: Requirements 5.2, 10.1**
-
-### Property 8: File-Level Aggregation Correctness
-
-*For any* set of symbols in the same file, when aggregated to file-level view, the file node's Fan_In should equal the sum of all symbol Fan_In values in that file.
-
-**Validates: Requirements 6.1**
-
-### Property 9: Coupling Heat Monotonicity
-
-*For any* two symbols A and B, if (fanIn_A + fanOut_A) > (fanIn_B + fanOut_B), then couplingHeat_A >= couplingHeat_B.
-
-**Validates: Requirements 7.1**
-
-### Property 11: CodeLens Metric Accuracy
-
-*For any* symbol displayed with CodeLens, the complexity and coupling values shown must exactly match the values computed by the System_Flow_Extractor.
-
-**Validates: Requirements 8.2, 8.3**
-
-### Property 12: CodeLens Warning Threshold Correctness
-
-*For any* function with Cyclomatic_Complexity greater than 15, the CodeLens indicator must display warning styling. For any symbol with Fan_In greater than 20, the CodeLens must display critical styling. For any symbol with Fan_Out greater than 15, the CodeLens must display elevated styling.
-
-**Validates: Requirements 8.5, 8.6, 8.7**
-
-### Property 13: Visualization Mode Filtering
-
-*For any* selected visualization mode, only nodes and relationships relevant to that mode must be rendered, and all unrelated elements must be hidden.
-
-**Validates: Requirements 9.5, 9.6**
-
-### Property 14: Architecture Mode File-Level Display
-
-*For any* graph in Architecture Mode, only file-level nodes should be visible, and all symbol-level nodes should be hidden.
-
-**Validates: Requirements 9.1**
-
-### Property 15: Flow Mode Execution Path
-
-*For any* symbol selected for Flow Mode, the displayed graph should include all reachable symbols following outgoing call relationships up to the configured depth.
-
-**Validates: Requirements 9.2**
-
-### Property 16: Trace Mode Bidirectional Display
-
-*For any* symbol in Trace Mode, the displayed graph should include all symbols with incoming relationships (Fan-In) and all symbols with outgoing relationships (Fan-Out) from that symbol.
-
-**Validates: Requirements 9.3**
-
-### Property 17: Multi-Filter AND Logic
-
-*For any* combination of active filters, a node must be visible if and only if it satisfies all active filter conditions simultaneously.
-
-**Validates: Requirements 10.5**
-
-### Property 18: Filtered Node Count Accuracy
-
-*For any* filter state, the displayed count of visible nodes must exactly match the number of rendered nodes.
-
-**Validates: Requirements 10.6, 10.7**
-
-### Property 19: Risk Level Filter Correctness
-
-*For any* risk level filter (Low, Medium, High), all visible nodes after filtering should have risk levels matching the selected threshold based on complexity and coupling values.
-
-**Validates: Requirements 10.1**
-
-### Property 20: Search Filtering Correctness
-
-*For any* search query and graph state, all visible nodes after filtering should match the query by name, and all matching nodes should be visible.
-
-**Validates: Requirements 12.1**
-
-### Property 21: Directory Scope Filtering
-
-*For any* selected directory filter, all visible nodes should have file paths within the selected directory scope, and all nodes outside the scope should be hidden.
-
-**Validates: Requirements 12.3**
-
-### Property 22: Worker Process Message Ordering
-
-*For any* sequence of requests sent to the Worker_Process, the responses should correspond to the requests in the order they were received.
-
-**Validates: Requirements 14.4**
-
-### Property 23: Parse Error Isolation
-
-*For any* workspace where some files fail to parse, the System_Flow_Extractor should successfully extract symbols from all parseable files and log errors for failed files without stopping the scanning process.
-
-**Validates: Requirements 16.2**
-
-### Property 24: Database Persistence Round-Trip
-
-*For any* indexed workspace, closing and reopening the workspace should load the same index data from the SQLite_Database without re-indexing unchanged files.
-
-**Validates: Requirements 15.2**
-
-### Property 25: Incremental Indexing Efficiency
-
-*For any* workspace with indexed files, when a subset of files is modified, only those modified files should be re-indexed, and the database should reflect only the changes to those files.
-
-**Validates: Requirements 15.3**
-
-### Property 26: Risk Score Calculation Consistency
-
-*For any* symbol, the calculated risk score should be deterministic based on its complexity, Fan_In, Fan_Out, and AI fragility values, producing the same score for the same inputs.
-
-**Validates: Requirements 17.1**
-
-### Property 27: Risk Threshold Flagging
-
-*For any* symbol, if its Cyclomatic_Complexity exceeds 15 OR its Fan_In exceeds 20, it should be flagged with the appropriate risk category.
-
-**Validates: Requirements 17.2, 17.3**
-
-### Property 28: Blast Radius Completeness
-
-*For any* symbol, the calculated blast radius should include all directly and indirectly dependent symbols, with accurate distance metrics from the origin, considering both static dependencies and runtime call relationships.
-
-**Validates: Requirements 18.1, 18.2, 18.3**
-
-### Property 29: Technical Debt Storage
-
-*For any* detected technical debt item, storing it in the database should preserve its severity, location, description, remediation, and associated symbol reference.
-
-**Validates: Requirements 19.2**
-
-### Property 30: Refactoring Application Correctness
-
-*For any* AI-suggested refactoring with a code diff, applying the refactoring should result in file content that matches the "after" state of the diff.
-
-**Validates: Requirements 20.4**
-
-### Property 31: Refactoring Undo Preservation
-
-*For any* applied refactoring, invoking undo should restore the file to its exact state before the refactoring was applied.
-
-**Validates: Requirements 20.5**
-
-### Property 32: Domain-Level Aggregation
-
-*For any* set of file-level and symbol-level relationships, when aggregated to domain-level in Architecture Mode, the resulting domain edges should represent all underlying connections between domains.
-
-**Validates: Requirements 22.2**
-
-### Property 33: AI Service Fallback
-
-*For any* configuration where one AI service is unavailable, all AI features should function using the fallback service without errors.
-
-**Validates: Requirements 16.4**
-
-### Property 34: Worker Process Memory Monitoring
-
-*For any* Worker_Process execution, when memory usage exceeds 512MB, the Extension_Host should detect this condition and restart the Worker_Process.
-
-**Validates: Requirements 14.6**
-
-### Property 35: Schema Migration Data Preservation
-
-*For any* database with existing data, applying a schema migration should preserve all data values while transforming the structure to the new schema.
-
-**Validates: Requirements 15.5**
-
-## Error Handling
-
-### Extension Host Error Handling
-
-**Webview Communication Failures:**
-- Implement message acknowledgment protocol
-- Retry failed messages up to 3 times
-- Detect webview disconnection and offer reload
-- Preserve webview state for recovery
-
-**AI Service Failures:**
-- Implement retry logic with exponential backoff (max 3 retries)
-- Provide fallback between AI services (Groq → Vertex → Gemini)
-- Cache successful AI responses to reduce API calls
-- Display user-friendly error messages for API failures
-- Allow manual retry for failed AI operations
-
-**Worker Process Failures:**
-- Monitor Worker_Process health via heartbeat messages
-- Detect crashes and memory limit violations
-- Automatically restart Worker_Process with exponential backoff
-- Preserve request queue across restarts
-- Log crash reasons and memory statistics
-
-### System Flow Extractor Error Handling
-
-**Parsing Failures:**
-- Catch Tree-sitter parsing exceptions per file
-- Log parsing errors with file path and error details
-- Continue scanning remaining files
-- Provide diagnostic information for unsupported syntax
-
-**File System Errors:**
-- Handle permission denied errors gracefully
-- Skip inaccessible directories and continue scanning
-- Log file system errors with context
-
-### Worker Process Error Handling
-
-**Process Communication Failures:**
-- Implement message acknowledgment protocol between Extension Host and Worker Process
-- Retry failed messages up to 3 times
-- Log communication errors with context
-
-**Memory Management:**
-- Monitor memory usage during scanning and parsing
-- Log memory statistics periodically
-- Gracefully handle out-of-memory conditions
-- Monitor memory usage every 10 seconds
-- Trigger garbage collection at 400MB threshold
-- Gracefully shutdown at 512MB threshold
-- Report memory statistics before restart
-- Clear caches to free memory under pressure
-
-**Database Failures:**
-- Wrap all database operations in transactions
-- Rollback on any operation failure
-- Implement database connection retry logic
-- Detect database corruption and offer rebuild
-- Backup database before schema migrations
-
-### Webview Error Handling
-
-**Rendering Failures:**
-- Catch React rendering errors with Error Boundaries
-- Display fallback UI for failed components
-- Log rendering errors to Extension Host
-- Provide "Reset View" action to recover
-
-**Graph Layout Failures:**
-- Detect layout algorithm failures or timeouts
-- Fall back to simpler layout algorithm
-- Limit graph size for complex layouts (max 1000 nodes)
-- Provide progressive rendering for large graphs
-
-**User Input Validation:**
-- Validate search queries before processing
-- Sanitize filter inputs
-- Provide immediate feedback for invalid inputs
-- Gracefully handle empty or malformed queries
-
-## Testing Strategy
-
-### Dual Testing Approach
-
-SentinelFlow requires both unit testing and property-based testing for comprehensive coverage:
-
-**Unit Tests:**
-- Specific examples demonstrating correct behavior
-- Edge cases (empty workspaces, single-file projects, deeply nested structures)
-- Error conditions (parsing failures, file system errors)
-- Integration points between components (Extension Host ↔ Webview)
-- UI interactions (node selection, filter application)
-
-**Property-Based Tests:**
-- Universal properties that hold for all inputs
-- Comprehensive input coverage through randomization
-- Minimum 100 iterations per property test
-- Each test tagged with: **Feature: sentinelflow, Property {N}: {property text}**
-
-### Property-Based Testing Configuration
-
-**Framework Selection:**
-- TypeScript: Use `fast-check` library for property-based testing
-- Minimum 100 iterations per property test (configurable via `fc.assert` options)
-
-**Test Organization:**
-- Group property tests by component (System Flow Extractor, Visualization, etc.)
-- Each property test must reference its design document property number
-- Use descriptive test names matching property titles
-
-**Example Property Test Structure:**
-
-```typescript
-import fc from 'fast-check';
-
-describe('System Flow Extractor Properties', () => {
-  // Feature: sentinelflow, Property 4: Fan-In Calculation Correctness
-  it('Property 4: Fan-In equals number of incoming relationships', () => {
-    fc.assert(
-      fc.property(
-        fc.array(symbolArbitrary),
-        fc.array(relationshipArbitrary),
-        (symbols, relationships) => {
-          const graph = buildGraph(symbols, relationships);
-          calculateMetrics(graph);
-          
-          for (const symbol of symbols) {
-            const expectedFanIn = relationships.filter(
-              r => r.toSymbolId === symbol.id
-            ).length;
-            
-            expect(graph.fanIn.get(symbol.id)).toBe(expectedFanIn);
-          }
-        }
-      ),
-      { numRuns: 100 }
-    );
-  });
-});
+```bash
+vscode-vsce package
 ```
 
-### Unit Testing Strategy
+The `.vsix` bundles all JS, WASM files, and static assets. Native modules are explicitly absent — the only binary payloads are the `sql-wasm.wasm` and `tree-sitter-*.wasm` grammar files.
 
-**Component-Level Tests:**
-- Extension Host: Command handling, worker process management, configuration management
-- Worker Process: Message handling, request queuing, process lifecycle
-- System Flow Extractor: Scanning, parsing, symbol extraction, relationship detection, complexity calculation, metric calculation
-- CodeLens Provider: Metric display, warning thresholds, trace action
-- Visualization Pipeline: Graph transformation, visualization modes, semantic zoom, filtering
-- Custom Editor Provider: .sflow file save and load
+---
 
-**Integration Tests:**
-- End-to-end scanning flow (scan → parse → extract → calculate metrics → build graph)
-- Worker Process communication (Extension Host ↔ Worker Process)
-- Webview rendering with real graph data
-- CodeLens display with real metrics
-- Node selection and navigation
-- Visualization mode switching
-- Filter application and node count accuracy
+## 16. Security Considerations
 
-**Edge Case Tests:**
-- Empty workspace (no files)
-- Single file workspace
-- Deeply nested directory structures
-- Files with parsing errors
-- Circular dependencies
-- High complexity functions (complexity > 50)
-- High coupling symbols (Fan_In > 50, Fan_Out > 50)
-- All visualization modes with various graph sizes
-- Multiple concurrent filters
+| Area | Approach |
+|---|---|
+| API key storage | VS Code `configuration` API — never written to source files or logs |
+| AI prompt data | Only target symbol source code + SQLite-derived stubs — no bulk file dumps |
+| File write access | Extension never writes to source files (advisor-only) |
+| DB storage | `<workspaceStorageUri>/index.db` — user-space, not encrypted |
+| Worker isolation | Worker thread operates with no access to VS Code UI API (no `vscode` import) |
+| WASM sandboxing | sql.js and Tree-sitter run inside a Node.js WASM sandbox |
 
-### Test Data Generation
+---
 
-**Arbitrary Generators for Property Tests:**
+## 17. Extension Settings Reference
 
-```typescript
-// Symbol generator
-const symbolArbitrary = fc.record({
-  id: fc.uuid(),
-  name: fc.string({ minLength: 1, maxLength: 50 }),
-  type: fc.constantFrom('function', 'class', 'variable', 'interface', 'type'),
-  filePath: fc.string({ minLength: 1, maxLength: 100 }),
-  startLine: fc.integer({ min: 1, max: 1000 }),
-  endLine: fc.integer({ min: 1, max: 1000 }),
-  complexity: fc.option(fc.integer({ min: 1, max: 100 })),
-});
+| Setting Key | Type | Default | Description |
+|---|---|---|---|
+| `sentinelFlow.groqApiKey` | string | — | Groq API key (Llama 3.1 reflex path) |
+| `sentinelFlow.geminiApiKey` | string | — | Google Gemini API key (strategic path) |
+| `sentinelFlow.vertexProject` | string | — | GCP Project ID for Vertex AI |
+| `sentinelFlow.aiProvider` | enum | `gemini` | Strategic path provider: `gemini` or `bedrock` |
+| `sentinelFlow.awsRegion` | string | `us-east-1` | AWS region for Amazon Bedrock |
+| `sentinelFlow.bedrockModelId` | string | `us.amazon.nova-2-lite-v1:0` | Bedrock model ID |
+| `sentinelFlow.awsAccessKeyId` | string | — | AWS IAM Access Key ID |
+| `sentinelFlow.awsSecretAccessKey` | string | — | AWS IAM Secret Access Key |
+| `sentinelFlow.useLSP` | boolean | `false` | Enable VS Code LSP type resolution for TS/JS |
 
-// Relationship generator
-const relationshipArbitrary = fc.record({
-  fromSymbolId: fc.uuid(),
-  toSymbolId: fc.uuid(),
-  type: fc.constantFrom('calls', 'imports', 'references'),
-});
+---
 
-// Graph node generator
-const graphNodeArbitrary = fc.record({
-  id: fc.uuid(),
-  type: fc.constantFrom('file', 'symbol'),
-  data: fc.record({
-    label: fc.string({ minLength: 1, maxLength: 100 }),
-    complexity: fc.option(fc.integer({ min: 1, max: 100 })),
-    fanIn: fc.option(fc.integer({ min: 0, max: 100 })),
-    fanOut: fc.option(fc.integer({ min: 0, max: 100 })),
-  }),
-  position: fc.record({
-    x: fc.float({ min: 0, max: 5000 }),
-    y: fc.float({ min: 0, max: 5000 }),
-  }),
-});
-```
+## 18. Known Limitations and Open Items
 
-### Performance Testing
-
-**Benchmarks:**
-- Scanning speed: Files per second for various project sizes
-- Graph rendering: Time to render graphs of various sizes
-- Memory usage: Peak memory during scanning and visualization
-
-**Performance Targets:**
-- Scan 1000 files in under 30 seconds
-- Graph rendering (500 nodes) completes in under 2 seconds
-- Memory usage stays reasonable for typical projects
-
-### Continuous Integration
-
-**CI Pipeline:**
-1. Lint and type check (TypeScript)
-2. Run unit tests with coverage (target: 80%+)
-3. Run property-based tests (100 iterations each)
-4. Run integration tests
-5. Build extension package
-6. Run smoke tests on packaged extension
-
-**Test Environment:**
-- Node.js version matching VS Code's Electron
-- Sample workspaces of various sizes
+| Item | Status | Notes |
+|---|---|---|
+| Java, Go, Rust support | Not implemented | Requires additional Tree-sitter grammar WASMs |
+| LSP type resolution | Optional flag (`useLSP`) | Not fully integrated in current build |
+| `.sflow` custom editor | Designed in requirements, not implemented | Serialised graph view saves |
+| AI retry with exponential backoff | Not implemented | Currently single-attempt with fallback |
+| Encrypted SQLite DB | Not implemented | DB stored unencrypted in OS temp store |
+| Refactoring auto-apply | Not implemented | Diff shown but not applied to source |
+| Streaming AI responses | Not implemented | Full response returned as single string |

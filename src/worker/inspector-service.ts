@@ -262,29 +262,25 @@ export class InspectorService {
                 const importsMap = new Map<string, InspectorDependencyItem>();
                 const usedByMap = new Map<string, InspectorDependencyItem>();
 
-                for (const sym of symbols) {
-                    // Outgoing edges (Imports)
-                    const outgoing = this.db.getOutgoingEdges(sym.id);
-                    for (const edge of outgoing) {
-                        if (!fileSymbolIds.has(edge.targetId)) {
-                            const target = this.db.getSymbolById(edge.targetId);
-                            if (target) {
-                                const item = this.mapSymbolToDep(target);
-                                importsMap.set(item.id, item);
-                            }
-                        }
+                if (symbols.length > 0) {
+                    const symbolIds = Array.from(fileSymbolIds);
+                    const allOutgoing = this.db.getOutgoingEdgesBatch(symbolIds);
+                    const allIncoming = this.db.getIncomingEdgesBatch(symbolIds);
+
+                    const targetIdsToFetch = [...new Set(allOutgoing.filter(e => !fileSymbolIds.has(e.targetId)).map(e => e.targetId))];
+                    const sourceIdsToFetch = [...new Set(allIncoming.filter(e => !fileSymbolIds.has(e.sourceId)).map(e => e.sourceId))];
+
+                    const targets = this.db.getSymbolsByIds(targetIdsToFetch);
+                    const sources = this.db.getSymbolsByIds(sourceIdsToFetch);
+
+                    for (const target of targets) {
+                        const item = this.mapSymbolToDep(target);
+                        importsMap.set(item.id, item);
                     }
 
-                    // Incoming edges (Used By)
-                    const incoming = this.db.getIncomingEdges(sym.id);
-                    for (const edge of incoming) {
-                        if (!fileSymbolIds.has(edge.sourceId)) {
-                            const source = this.db.getSymbolById(edge.sourceId);
-                            if (source) {
-                                const item = this.mapSymbolToDep(source);
-                                usedByMap.set(item.id, item);
-                            }
-                        }
+                    for (const source of sources) {
+                        const item = this.mapSymbolToDep(source);
+                        usedByMap.set(item.id, item);
                     }
                 }
 

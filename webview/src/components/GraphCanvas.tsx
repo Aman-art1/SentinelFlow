@@ -142,12 +142,16 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
 
     // ── PERFORMANCE OPTIMIZATION UTILS ───────────────────────────────────────
 
-    // Derive a stable key for collapsed nodes to prevent full topology rebuilds
-    // on every toggle. Sets are compared by reference, so we use a string key.
-    const collapsedKey = useMemo(
-        () => Array.from(collapsedNodes).sort().join('|'),
-        [collapsedNodes]
-    );
+    // Derive a stable version counter for collapsed nodes.
+    // Using a version number is O(1) vs the previous O(N log N) sort+join.
+    const collapseVersion = useRef(0);
+    const prevCollapsedRef = useRef(collapsedNodes);
+    if (prevCollapsedRef.current !== collapsedNodes) {
+        collapseVersion.current++;
+        prevCollapsedRef.current = collapsedNodes;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const collapsedKey = collapseVersion.current;
 
     // Persistent mouse position for precise tooltip placement without re-renders
     const mousePos = useRef({ x: 0, y: 0 });
@@ -183,9 +187,12 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
 
     // ── STABLE ACTIONS ───────────────────────────────────────────────────────
     // These actions are stable references and won't cause child re-renders
+    const toggleRef = useRef(toggleNodeCollapse);
+    useEffect(() => { toggleRef.current = toggleNodeCollapse; }, [toggleNodeCollapse]);
+
     const handleToggleCollapse = useCallback((nodeId: string) => {
-        toggleNodeCollapse(nodeId);
-    }, [toggleNodeCollapse]);
+        toggleRef.current(nodeId);
+    }, []);
 
     // ── DATA PREPARATION ──────────────────────────────────────────────────────
 
@@ -276,7 +283,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                             totalBlastRadius: n.totalBlastRadius
                         },
                         collapsed: isCollapsed,
-                        onToggleCollapse: toggleNodeCollapse,
+                        onToggleCollapse: handleToggleCollapse,
                     } as DomainNodeData : {
                         nodeId: n.id,
                         filePath: n.id,
@@ -318,7 +325,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         }));
 
         return { nodes, edges: [...structureEdges, ...dependencyEdges] };
-    }, [currentMode, architectureSkeleton, sortBy, selectedDomain, maxDepth, collapsedKey, toggleNodeCollapse]);
+    }, [currentMode, architectureSkeleton, sortBy, selectedDomain, maxDepth, collapsedKey, handleToggleCollapse]);
 
     // 2. Codebase Mode Nodes/Edges
     const codebaseTopology = useMemo(() => {
@@ -373,7 +380,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                         symbolCount: domainSymbols.length, avgComplexity, coupling: 0
                     },
                     collapsed: isDomainCollapsed,
-                    onToggleCollapse: toggleNodeCollapse,
+                    onToggleCollapse: handleToggleCollapse,
                 } as DomainNodeData,
             });
 
@@ -400,7 +407,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                         nodeId: fileNodeId,
                         filePath, symbolCount: fileSymbols.length, avgCoupling,
                         collapsed: isFileCollapsed,
-                        onToggleCollapse: toggleNodeCollapse,
+                        onToggleCollapse: handleToggleCollapse,
                         label: filePath.split('/').pop() || filePath,
                     } as FileNodeData,
                 });
@@ -456,7 +463,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         });
 
         return { nodes, edges: optimizeEdges(edges, 10000) };
-    }, [currentMode, graphData, couplingMetrics, sortBy, selectedDomain, maxDepth, collapsedKey, toggleNodeCollapse]);
+    }, [currentMode, graphData, couplingMetrics, sortBy, selectedDomain, maxDepth, collapsedKey, handleToggleCollapse]);
 
     // 3. Trace Mode Nodes/Edges
     const traceTopology = useMemo(() => {
@@ -594,7 +601,18 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         }
     }, [searchQuery, focusNode]); // Only depend on searchQuery change
 
-    // Apply layout when visible nodes change (debounced to prevent rapid re-layouts)
+    // Stable ID strings: layout ONLY re-fires when the SET of visible nodes/edges changes,
+    // NOT when positions change after a drag/pan — which would be very expensive.
+    const visibleNodeIdsKey = useMemo(
+        () => visibleNodes.map(n => n.id).join(','),
+        [visibleNodes]
+    );
+    const visibleEdgeIdsKey = useMemo(
+        () => visibleEdges.map(e => e.id).join(','),
+        [visibleEdges]
+    );
+
+    // Apply layout when visible nodes/edges membership changes (debounced)
     useEffect(() => {
         if (visibleNodes.length === 0) {
             setNodes([]);
@@ -664,27 +682,35 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         }, 150); // 150ms debounce
 
         return () => clearTimeout(layoutTimer);
-    }, [visibleNodes, visibleEdges, currentMode, setNodes, setEdges]);
+        // Depend on stable ID KEY STRINGS, not the raw arrays.
+        // This means dragging / panning a node (which mutates position, not ID)
+        // will NOT trigger a full ELK re-layout.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visibleNodeIdsKey, visibleEdgeIdsKey, currentMode, setNodes, setEdges]);
 
     // ⚡ BACKGROUND WARM: After graph settles, silently prefetch inspector data for
-    // all visible domain + file nodes (capped at 20). These are the most-clicked nodes,
+    // all visible domain + file nodes (capped at 10). These are the most-clicked nodes,
     // so they'll already be cached by the time the user clicks them.
+    const warmUpTargets = useMemo(() => {
+        return nodes
+            .filter(n => n.type === 'domainNode' || n.type === 'fileNode')
+            .slice(0, 10)
+            .map(n => ({ id: n.id, type: n.type }));
+    }, [nodes]);
+    const warmUpHash = useMemo(() => warmUpTargets.map(t => t.id).join(','), [warmUpTargets]);
+
     useEffect(() => {
-        if (nodes.length === 0 || isLayouting) return;
+        if (!warmUpHash || isLayouting) return;
 
         const warmTimer = setTimeout(async () => {
             const provider = getDataProvider(vscode);
-            const topNodes = nodes
-                .filter(n => n.type === 'domainNode' || n.type === 'fileNode')
-                .slice(0, 10); // reduced cap to avoid flooding
-
             let alive = true;
 
-            for (const node of topNodes) {
+            for (const target of warmUpTargets) {
                 if (!alive) break;
-                const nodeType = node.type === 'domainNode' ? 'domain' : 'file';
+                const nodeType = target.type === 'domainNode' ? 'domain' : 'file';
                 // Sequential fire-and-forget with yield behavior
-                await provider.getAll(node.id, nodeType as any).catch(() => { });
+                await provider.getAll(target.id, nodeType as any).catch(() => { });
                 // Small gap to avoid starving the IPC/message bus
                 await new Promise(r => setTimeout(r, 100));
             }
@@ -693,7 +719,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         }, 2000); // 2s after graph settles so layout isn't competing
 
         return () => clearTimeout(warmTimer);
-    }, [nodes, isLayouting, vscode]);
+    }, [warmUpHash, isLayouting, vscode]);
 
     // Handle Right Click (Context Menu) for locking/unlocking highlights
     const handleNodeContextMenu = useCallback(
@@ -717,13 +743,14 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
     // Highlight nodes and edges on hover with rich aesthetics
     // OPTIMIZATION: Use CSS classes for highlighting to preserve reference equality for unconnected nodes
 
+    const nodeIdSet = useMemo(() => new Set(nodes.map(n => n.id)), [nodes]);
+
     // Ensure active/locked node actually exists in current view (prevents stale locks from dimming everything)
     const activeId = useMemo(() => {
         const candidateId = lockedNodeId || hoveredNodeId;
         if (!candidateId) return null;
-        // Verify existence in current nodes list (O(n) but safe, or O(1) if map used - but nodes length is small enough usually)
-        return nodes.some(n => n.id === candidateId) ? candidateId : null;
-    }, [lockedNodeId, hoveredNodeId, nodes]);
+        return nodeIdSet.has(candidateId) ? candidateId : null;
+    }, [lockedNodeId, hoveredNodeId, nodeIdSet]);
 
     const hasActiveHighlight = !!activeId;
 
@@ -750,19 +777,39 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
 
     // Memoize interactive nodes with styles
     const interactiveNodes = useMemo(() => {
-        if (!activeId) return sortedNodes;
+        // Implementation of the "60-node logic":
+        // 1. Only applies in Trace Mode
+        // 2. If trace has <= 60 nodes -> ALWAYS show full names (compactMode = false)
+        // 3. If trace has > 60 nodes -> Names appear only when zoomed in (compactMode = zoomTier === 'low')
+        const isDenseTrace = currentMode === 'trace' && sortedNodes.length > 60;
+        const isCompact = isDenseTrace && zoomTier === 'low';
 
         return sortedNodes.map(node => {
             const isHovered = node.id === hoveredNodeId;
             const isConnected = activeId ? connectedNodeIds.has(node.id) : false;
 
+            // Base data for this render cycle
+            const baseData = {
+                ...node.data,
+                compactMode: node.type === 'symbolNode' ? isCompact : false,
+                zoomLevel: zoomTier === 'low' ? 0.3 : zoomTier === 'medium' ? 0.8 : 1.5
+            };
+
+            if (!activeId) {
+                // If nothing is active, we still need to return a new object if compactMode changed
+                // (SortedNodes might be stable, but zoomTier/isCompact changed)
+                return {
+                    ...node,
+                    data: baseData
+                };
+            }
+
             // Highlight Logic:
-            // Unconnected nodes return the same reference → React.memo prevents their re-render
             if (!isHovered && !isConnected) {
                 return {
                     ...node,
-                    className: '',
-                    data: { ...node.data, isDimmed: true, isActive: false },
+                    className: 'dimmed',
+                    data: { ...baseData, isDimmed: true, isActive: false },
                     zIndex: node.type === 'fileNode' ? 10 : 1
                 };
             }
@@ -771,7 +818,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                 ...node,
                 className: 'highlighted',
                 data: {
-                    ...node.data,
+                    ...baseData,
                     isDimmed: false,
                     isActive: true,
                     isClickable: true,
@@ -779,7 +826,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                 zIndex: isHovered ? 2000 : 1500,
             };
         });
-    }, [sortedNodes, hoveredNodeId, activeId, connectedNodeIds]);
+    }, [sortedNodes, hoveredNodeId, activeId, connectedNodeIds, nodes.length, zoomTier, currentMode]);
 
     const interactiveEdges = useMemo(() => {
         if (!activeId) return edges;
@@ -851,13 +898,17 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         const clientY = mousePos.current.y;
         const nodeData = node.data as any;
 
-        // In codebase detailed mode (maxDepth === 2), disable hover highlight for domain and file
-        // nodes — they cover large areas and cause frustrating accidental dimming of everything else.
-        // Only symbol/function nodes trigger highlighting in this mode.
-        const isDetailedCodebase = currentMode === 'codebase' && maxDepth === 2;
-        const isContainerNode = node.type === 'domainNode' || node.type === 'fileNode';
-        if (isDetailedCodebase && isContainerNode) {
-            return;
+        // Codebase mode specific hover guards to prevent frustrating accidental dimming 
+        // of everything else when moving the mouse across large structural containers:
+        // - High Detail (maxDepth=2): skip hover for both domain and file nodes.
+        // - Structure Detail (maxDepth=1): skip hover for domain nodes.
+        if (currentMode === 'codebase') {
+            if (maxDepth === 2 && (node.type === 'domainNode' || node.type === 'fileNode')) {
+                return;
+            }
+            if (maxDepth === 1 && node.type === 'domainNode') {
+                return;
+            }
         }
 
         // ⚡ HOVER PREFETCH: Start loading inspector data immediately on hover — no delay.
@@ -879,27 +930,50 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
         hoverTimer.current = setTimeout(() => {
             setHoveredNodeId(node.id);
 
-            // Tooltip Logic
-            const content: any = {};
-            let hasContent = false;
+            // ── COMPREHENSIVE TOOLTIP LOGIC ──────────────────────────────────────
+            const content: any = {
+                name: nodeData.label || nodeData.domain || nodeData.name || node.id.split('/').pop(),
+                type: node.type === 'domainNode' ? 'Domain' : node.type === 'fileNode' ? 'File' : 'Symbol',
+                subType: nodeData.symbolType
+            };
 
+            // 1. Complexity / Health
             if (nodeData.complexity !== undefined || nodeData.avgComplexity !== undefined) {
                 content.complexity = nodeData.complexity ?? nodeData.avgComplexity;
-                hasContent = true;
             }
-            if (nodeData.blastRadius !== undefined || nodeData.totalBlastRadius !== undefined) {
-                content.blastRadius = nodeData.blastRadius ?? nodeData.totalBlastRadius;
-                hasContent = true;
+            if (nodeData.health?.healthScore !== undefined) {
+                content.healthScore = nodeData.health.healthScore;
+                content.status = nodeData.health.status;
             }
 
-            if (hasContent) {
-                setTooltipData({
-                    x: clientX,
-                    y: clientY,
-                    content,
-                    type: node.type || 'node'
-                });
+            // 2. Coupling / CBO
+            if (nodeData.avgCoupling !== undefined) {
+                content.coupling = (nodeData.avgCoupling * 100).toFixed(0) + '%';
+            } else if (nodeData.coupling?.cbo !== undefined) {
+                content.coupling = nodeData.coupling.cbo;
             }
+
+            // 3. Size / Scope
+            if (nodeData.symbolCount !== undefined) {
+                content.symbolCount = nodeData.symbolCount;
+            }
+
+            // 4. Risk
+            if (nodeData.blastRadius !== undefined || nodeData.totalBlastRadius !== undefined) {
+                content.blastRadius = nodeData.blastRadius ?? nodeData.totalBlastRadius;
+            }
+
+            // 5. Context
+            if (nodeData.filePath) {
+                content.filePath = nodeData.filePath;
+            }
+
+            setTooltipData({
+                x: clientX,
+                y: clientY,
+                content,
+                type: node.type || 'node'
+            });
         }, delay);
     }, [currentMode, maxDepth]);
 
@@ -913,17 +987,22 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
     // Handle node click based on view mode
     const handleNodeClick = useCallback(
         (_event: React.MouseEvent, node: Node) => {
-            // Set local focus
-            setFocusedNodeId(node.id);
+            // Focus the node visually (zooms the viewport)
             focusNode(node.id);
 
-            // Also notify parent
+            // Also notify parent (opens the Inspector)
             if (onNodeClick) {
                 onNodeClick(node.id);
             }
         },
-        [onNodeClick, setFocusedNodeId, focusNode]
+        [onNodeClick, focusNode]
     );
+
+    // Handle clicking the background/pane to clear focus
+    const handlePaneClick = useCallback(() => {
+        setFocusedNodeId(null);
+        clearFocus();
+    }, [setFocusedNodeId, clearFocus]);
 
 
 
@@ -1094,6 +1173,7 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                         onNodeMouseEnter={handleNodeMouseEnter}
                         onNodeMouseLeave={handleNodeMouseLeave}
                         onNodeContextMenu={handleNodeContextMenu}
+                        onPaneClick={handlePaneClick}
                         onPaneContextMenu={(e) => { e.preventDefault(); setLockedNodeId(null); }}
                         nodeTypes={nodeTypes}
                         minZoom={0.1}
@@ -1104,8 +1184,13 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                         onlyRenderVisibleElements={true}
                         elevateEdgesOnSelect={false}
                         zoomOnDoubleClick={false}
+                        edgesFocusable={false}
                         defaultEdgeOptions={{
                             type: 'default',
+                            interactionWidth: 0,
+                            style: {
+                                pointerEvents: 'none'
+                            }
                         }}
                         onMove={onMove}
                     >
@@ -1213,61 +1298,88 @@ const GraphCanvas = ({ graphData, vscode, onNodeClick, searchQuery }: GraphCanva
                 <div
                     style={{
                         position: 'fixed',
-                        top: tooltipData.y + 10,
-                        left: tooltipData.x + 10,
+                        top: tooltipData.y + 25,
+                        left: tooltipData.x + 15,
                         backgroundColor: 'var(--vscode-editor-background)',
                         border: '1px solid var(--vscode-widget-border)',
-                        borderRadius: '6px',
-                        padding: '8px 12px',
-                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.25)',
+                        borderRadius: '8px',
+                        padding: '10px 14px',
+                        boxShadow: '0 8px 16px rgba(0, 0, 0, 0.4)',
                         zIndex: 9999,
                         color: 'var(--vscode-editor-foreground)',
                         fontSize: '11px',
                         pointerEvents: 'none',
+                        minWidth: '180px',
+                        backdropFilter: 'blur(4px)',
                     }}
                 >
-                    {tooltipData.content.complexity !== undefined && (
-                        <div className="flex items-center gap-2 mb-1">
-                            <span className="opacity-70">Complexity:</span>
-                            <span className="font-bold">{tooltipData.content.complexity.toFixed(1)}</span>
+                    <div className="flex flex-col gap-2">
+                        {/* Header */}
+                        <div className="border-b border-white/10 pb-2 mb-1">
+                            <div className="flex items-center justify-between gap-4">
+                                <span className="font-bold text-sm truncate max-w-[200px]">{tooltipData.content.name}</span>
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 opacity-60 uppercase tracking-wider font-bold">
+                                    {tooltipData.content.subType || tooltipData.content.type}
+                                </span>
+                            </div>
+                            {tooltipData.content.filePath && (
+                                <div className="text-[10px] opacity-40 truncate max-w-[240px] mt-0.5 font-mono">
+                                    {tooltipData.content.filePath}
+                                </div>
+                            )}
                         </div>
-                    )}
-                    {tooltipData.content.blastRadius !== undefined && (
-                        <div className="flex items-center gap-2">
-                            <span className="opacity-70">Blast Radius:</span>
-                            <span className="font-bold text-red-500">{tooltipData.content.blastRadius}</span>
+
+                        {/* Metrics Grid */}
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                            {tooltipData.content.complexity !== undefined && (
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] opacity-50">Complexity</span>
+                                    <span className="font-semibold">{tooltipData.content.complexity.toFixed(1)}</span>
+                                </div>
+                            )}
+                            {tooltipData.content.coupling !== undefined && (
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] opacity-50">Coupling</span>
+                                    <span className="font-semibold">{tooltipData.content.coupling}</span>
+                                </div>
+                            )}
+                            {tooltipData.content.symbolCount !== undefined && (
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] opacity-50">Symbols</span>
+                                    <span className="font-semibold">{tooltipData.content.symbolCount}</span>
+                                </div>
+                            )}
+                            {tooltipData.content.blastRadius !== undefined && (
+                                <div className="flex flex-col">
+                                    <span className="text-[10px] opacity-50 text-red-400">Blast Radius</span>
+                                    <span className="font-semibold text-red-500">{tooltipData.content.blastRadius}</span>
+                                </div>
+                            )}
+                            {tooltipData.content.healthScore !== undefined && (
+                                <div className="flex flex-col col-span-2 mt-1 pt-1 border-t border-white/5">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[10px] opacity-50 text-emerald-400">Health</span>
+                                        <span className={`text-[10px] font-bold uppercase ${tooltipData.content.status === 'critical' ? 'text-red-500' :
+                                            tooltipData.content.status === 'warning' ? 'text-amber-500' : 'text-emerald-500'
+                                            }`}>
+                                            {tooltipData.content.status}
+                                        </span>
+                                    </div>
+                                    <div className="w-full h-1 bg-white/10 rounded-full mt-1 overflow-hidden">
+                                        <div
+                                            className={`h-full rounded-full ${tooltipData.content.status === 'critical' ? 'bg-red-500' :
+                                                tooltipData.content.status === 'warning' ? 'bg-amber-500' : 'bg-emerald-500'
+                                                }`}
+                                            style={{ width: `${tooltipData.content.healthScore}%` }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
                         </div>
-                    )}
+                    </div>
                 </div>
             )}
 
-            {/* Global Styles for Zoom Levels (injected here) */}
-            <style>{`
-                /* Progressive Disclosure Logic */
-                
-                /* Low Zoom (< 0.6): Hide metadata, minimal view */
-                .graph-wrapper.zoom-low .file-node-container .node-meta,
-                .graph-wrapper.zoom-low .domain-node-container .node-meta,
-                .graph-wrapper.zoom-low .symbol-node-container .node-label { 
-                    display: none; 
-                }
-                
-                /* Hover Dimming Logic */
-                .graph-wrapper.has-highlight .react-flow__node:not(.highlighted) {
-                    opacity: 0.55;
-                    transition: opacity 0.2s ease;
-                }
-                
-                .graph-wrapper.has-highlight .react-flow__edge:not(.highlighted) {
-                    opacity: 0.35;
-                    transition: opacity 0.2s ease;
-                }
-                
-                .react-flow__node.highlighted {
-                    filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.5));
-                    transition: filter 0.2s ease;
-                }
-            `}</style>
         </div>
     );
 };

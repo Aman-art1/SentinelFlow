@@ -7,7 +7,7 @@
     Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  
+
   color-scheme: light dark;
 }
 
@@ -73,3 +73,29 @@ body {
   border: 1px solid var(--vscode-panel-border, #3c3c3c);
 }
 
+/* Progressive Disclosure Logic */
+.graph-wrapper.zoom-low .file-node-container .node-meta,
+.graph-wrapper.zoom-low .domain-node-container .node-meta {
+  display: none;
+}
+
+/* Hover Dimming Logic */
+.graph-wrapper.has-highlight .react-flow__node:not(.highlighted) {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+.graph-wrapper.has-highlight .react-flow__edge:not(.highlighted) {
+  opacity: 0.35;
+  transition: opacity 0.2s ease;
+}
+
+.react-flow__node.highlighted {
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.5));
+  transition: filter 0.2s ease;
+}
+
+/* Prevent edges from grabbing mouse panning events */
+.react-flow__edge {
+  pointer-events: none !important;
+}

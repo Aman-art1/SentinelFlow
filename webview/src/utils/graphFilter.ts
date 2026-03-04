@@ -54,6 +54,46 @@ interface FilteredGraph {
 }
 
 /**
+ * Cheap helper: returns the same node reference when the target data
+ * properties already match — killing any downstream re-render.
+ */
+function withNodeData(
+    node: Node,
+    opacity: number,
+    isHighlighted: boolean,
+    disableHeatmap: boolean,
+    extraStyle?: Record<string, string | undefined>
+): Node {
+    const d = node.data as any;
+
+    // If data is already the target values AND no extra style changes → same reference
+    if (
+        d.opacity === opacity &&
+        d.isHighlighted === isHighlighted &&
+        d.disableHeatmap === disableHeatmap &&
+        !extraStyle
+    ) {
+        return node;
+    }
+
+    // Only allocate new objects when something actually changed
+    const newData: any = { ...d, opacity, isHighlighted, disableHeatmap };
+    if (opacity === 1.0 && !isHighlighted) {
+        newData.glowColor = undefined;
+    }
+
+    if (extraStyle) {
+        return {
+            ...node,
+            data: newData,
+            style: { ...node.style, ...extraStyle },
+        };
+    }
+
+    return { ...node, data: newData };
+}
+
+/**
  * Apply view mode filtering to the entire graph
  * This is the main entry point for filtering
  */
@@ -92,18 +132,9 @@ function filterTraceMode(
     allEdges: Edge[],
     _context: FilterContext
 ): FilteredGraph {
-    // In trace mode, the trace nodes are usually the only ones passed in
-    // or we identify them by the symbols present.
-    // However, to be safe, we filter for nodes that are NOT domains/files
-    // unless they are specifically part of the trace (which they shouldn't be in micro view)
-    const visibleNodes = allNodes.filter(n => n.type === 'symbolNode').map(node => ({
-        ...node,
-        data: {
-            ...node.data,
-            opacity: 1.0,
-            isHighlighted: false,
-        }
-    }));
+    const visibleNodes = allNodes
+        .filter(n => n.type === 'symbolNode')
+        .map(node => withNodeData(node, 1.0, false, true));
 
     const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
     const visibleEdges = allEdges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
@@ -143,7 +174,6 @@ function filterBySearch(
     });
 
     // 2. Collect matching nodes AND their parents to preserve hierarchy structure
-    // This prevents React Flow children from "floating" or stacking at the origin.
     const nodesToKeep = new Set<string>();
     const nodeLookup = new Map(visibleNodes.map(n => [n.id, n]));
 
@@ -156,25 +186,20 @@ function filterBySearch(
         }
     });
 
-    // 3. Finalize node list with highlight styles
+    // 3. Finalize node list — reuse reference equality helper
     const finalNodes = visibleNodes
         .filter(node => nodesToKeep.has(node.id))
         .map(node => {
             const isDirectMatch = matchingNodeIds.has(node.id);
-            return {
-                ...node,
-                data: {
-                    ...node.data,
-                    opacity: 1.0,
-                    isHighlighted: isDirectMatch,
-                    disableHeatmap: true,
-                },
-                style: {
-                    ...node.style,
-                    border: isDirectMatch ? '2px solid var(--vscode-focusBorder)' : node.style?.border,
-                    boxShadow: isDirectMatch ? '0 0 12px rgba(56, 189, 248, 0.4)' : node.style?.boxShadow,
+
+            const extraStyle: Record<string, string | undefined> | undefined = isDirectMatch
+                ? {
+                    border: '2px solid var(--vscode-focusBorder)',
+                    boxShadow: '0 0 12px rgba(56, 189, 248, 0.4)',
                 }
-            };
+                : undefined;
+
+            return withNodeData(node, 1.0, isDirectMatch, true, extraStyle);
         });
 
     // 4. Update edges to only connect preserved nodes
@@ -200,29 +225,7 @@ function filterArchitectureMode(
         .filter((node) => context.mode === 'codebase'
             ? true  // Codebase shows all node types including symbols
             : (node.type === 'domainNode' || node.type === 'fileNode'))
-        .map((node) => {
-            const currentOpacity = (node.data as any)?.opacity;
-            const currentDisableHeatmap = (node.data as any)?.disableHeatmap;
-            const currentHighlight = (node.data as any)?.isHighlighted;
-
-            // Only skip cloning if ALL properties exist and match target state
-            if (currentOpacity === 1.0 &&
-                currentDisableHeatmap === true &&
-                currentHighlight === false) {
-                return node;
-            }
-
-            return {
-                ...node,
-                data: {
-                    ...node.data,
-                    opacity: 1.0,
-                    isHighlighted: false,
-                    glowColor: undefined,
-                    disableHeatmap: true,
-                },
-            };
-        });
+        .map((node) => withNodeData(node, 1.0, false, true));
 
     // Filter edges: Only between visible nodes
     const visibleNodeIds = new Set(visibleNodes.map((n) => n.id));
