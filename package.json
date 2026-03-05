@@ -1,0 +1,175 @@
+{
+  "name": "sentinel-flow-extension",
+  "displayName": "Sentinel Flow",
+  "description": "Advanced codebase intelligence and visualization",
+  "icon": "resources/sentinel_flow_icon.png",
+  "version": "0.1.0",
+  "publisher": "innovators-of-ai",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20.0.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/innovators-of-ai/sentinel-flow-extension.git"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeIndexer.indexWorkspace",
+        "title": "Sentinel Flow: Index Workspace"
+      },
+      {
+        "command": "codeIndexer.querySymbols",
+        "title": "Sentinel Flow: Query Symbols"
+      },
+      {
+        "command": "codeIndexer.clearIndex",
+        "title": "Sentinel Flow: Clear Index"
+      },
+      {
+        "command": "codeIndexer.exportGraph",
+        "title": "Sentinel Flow: Export Graph as JSON"
+      },
+      {
+        "command": "codeIndexer.exportArchitectureSkeleton",
+        "title": "Sentinel Flow: Export Architecture Skeleton as JSON"
+      },
+      {
+        "command": "codeIndexer.toggleFileWatcher",
+        "title": "Sentinel Flow: Toggle File Watcher"
+      },
+      {
+        "command": "codeIndexer.visualizeGraph",
+        "title": "Sentinel Flow: Visualize Code Graph"
+      },
+      {
+        "command": "codeIndexer.configureAI",
+        "title": "Sentinel Flow: Configure AI Keys"
+      },
+      {
+        "command": "codeIndexer.refineGraph",
+        "title": "Sentinel Flow: Refine Graph with AI (Architect Pass)"
+      },
+      {
+        "command": "codeIndexer.refineArchitecture",
+        "title": "Sentinel Flow: Refine Architecture Labels with AI"
+      },
+      {
+        "command": "architect.viewDirectory",
+        "title": "Sentinel Flow: View Module Graph"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Sentinel Flow",
+      "properties": {
+        "sentinelFlow.groqApiKey": {
+          "type": "string",
+          "description": "Groq API Key (Llama 3.1). Required for reflex/fast analysis."
+        },
+        "sentinelFlow.geminiApiKey": {
+          "type": "string",
+          "description": "Google Gemini API Key (Gemini 1.5 Pro). Simple alternative to Vertex AI project ID."
+        },
+        "sentinelFlow.useLSP": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable LSP-based symbol resolution for 100% accurate type definitions (TypeScript/JavaScript). Uses VS Code's built-in language server."
+        },
+        "sentinelFlow.aiProvider": {
+          "type": "string",
+          "enum": [
+            "gemini",
+            "bedrock"
+          ],
+          "default": "gemini",
+          "description": "Which AI service to use for deep architectural analysis (strategic path). Groq is always used for fast/reflex queries."
+        },
+        "sentinelFlow.awsRegion": {
+          "type": "string",
+          "default": "us-east-1",
+          "description": "AWS Region for Amazon Bedrock. Nova 2 models are only available in us-east-1. Your IAM credentials work globally."
+        },
+        "sentinelFlow.bedrockModelId": {
+          "type": "string",
+          "default": "us.amazon.nova-2-lite-v1:0",
+          "description": "Amazon Bedrock Model ID. Defaults to US Cross-Region Amazon Nova 2 Lite (us-east-1 endpoint required)."
+        },
+        "sentinelFlow.awsAccessKeyId": {
+          "type": "string",
+          "description": "AWS Access Key ID to authenticate with Amazon Bedrock."
+        },
+        "sentinelFlow.awsSecretAccessKey": {
+          "type": "string",
+          "description": "AWS Secret Access Key to authenticate with Amazon Bedrock."
+        }
+      }
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "architect.viewDirectory",
+          "group": "navigation",
+          "when": "explorerResourceIsFolder"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sentinel-flow-sidebar-view",
+          "title": "Sentinel Flow",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sentinel-flow-sidebar-view": [
+        {
+          "type": "webview",
+          "id": "sentinel-flow-sidebar",
+          "name": "Navigate",
+          "icon": "resources/icon.svg",
+          "contextualTitle": "Sentinel Flow"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:webview && esbuild src/extension.ts src/worker/worker.ts --bundle --outdir=dist --external:vscode --external:web-tree-sitter --external:sql.js --format=cjs --platform=node --target=node20 --sourcemap && npm run copy:wasm",
+    "build:webview": "cd webview && npm install && npm run build",
+    "copy:wasm": "cp node_modules/sql.js/dist/sql-wasm.wasm dist/worker/sql-wasm.wasm",
+    "watch": "npm run build -- --watch",
+    "test": "node test/validate.js",
+    "validate": "npm run build && node dist/test/validate.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@types/node": "^20.11.5",
+    "@types/sql.js": "^1.4.9",
+    "@types/vscode": "^1.85.0",
+    "drizzle-kit": "^0.20.14",
+    "drizzle-orm": "^0.45.1",
+    "esbuild": "^0.20.0",
+    "groq-sdk": "^0.37.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1000.0",
+    "sql.js": "^1.14.0",
+    "tree-sitter-wasms": "^0.1.11",
+    "web-tree-sitter": "^0.20.8"
+  }
+}
