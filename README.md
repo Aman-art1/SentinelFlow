@@ -299,7 +299,7 @@ Search for `Sentinel Flow` in the VS Code Extensions panel.
 **Option B — Build from Source**
 
 ```bash
-git clone https://github.com/innovators-of-ai/sentinel-flow-extension.git
+git clone https://github.com/Aman-art1/SentinelFlow
 cd sentinel-flow-extension
 npm install
 npm run build
